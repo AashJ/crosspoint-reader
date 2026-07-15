@@ -78,6 +78,23 @@ class Section {
   std::unique_ptr<Page> loadPageDuringBuild(int page);
 
  public:
+  // The render parameters that determine pagination, in section cache header order
+  // (see writeSectionFileHeader). A cached page count is only valid for one set.
+  struct RenderParams {
+    int fontId = 0;
+    float lineCompression = 0.0f;
+    bool extraParagraphSpacing = false;
+    uint8_t paragraphAlignment = 0;
+    uint16_t viewportWidth = 0;
+    uint16_t viewportHeight = 0;
+    bool hyphenationEnabled = false;
+    bool embeddedStyle = false;
+    uint8_t imageRendering = 0;
+    bool focusReadingEnabled = false;
+
+    bool operator==(const RenderParams& o) const;
+  };
+
   uint16_t pageCount = 0;
   int currentPage = 0;
 
@@ -144,7 +161,10 @@ class Section {
   std::optional<uint16_t> findAnchorDuringBuild(const std::string& anchor) const;
 
   // Get the page count from the section cache file without fully loading it.
-  std::optional<uint16_t> getCachedPageCount() const;
+  // Finalized files only (a partial's count is just a build watermark). When
+  // `mustMatch` is given, the header's render parameters must equal it, so a
+  // count cached under different settings is never trusted.
+  std::optional<uint16_t> getCachedPageCount(const RenderParams* mustMatch = nullptr) const;
 
   // Look up the page number for a synthetic paragraph index from XPath p[N].
   std::optional<uint16_t> getPageForParagraphIndex(uint16_t pIndex) const;

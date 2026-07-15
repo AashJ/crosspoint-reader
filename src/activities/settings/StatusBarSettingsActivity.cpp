@@ -64,6 +64,10 @@ std::string formatUtcOffset(uint8_t biasedQ) {
   snprintf(buf, sizeof(buf), "UTC%c%d:%02d", neg ? '-' : '+', hours, mins);
   return buf;
 }
+// Order follows STATUS_BAR_PAGE_COUNT (hide=0, chapter=1, book=2).
+constexpr int PAGE_COUNT_ITEMS = 3;
+const StrId pageCountNames[PAGE_COUNT_ITEMS] = {StrId::STR_HIDE, StrId::STR_CHAPTER, StrId::STR_BOOK};
+
 constexpr int PROGRESS_BAR_ITEMS = 3;
 const StrId progressBarNames[PROGRESS_BAR_ITEMS] = {StrId::STR_BOOK, StrId::STR_CHAPTER, StrId::STR_HIDE};
 
@@ -90,7 +94,11 @@ void StatusBarSettingsActivity::onEnter() {
   selectedIndex = 0;
   visibleItemCount = halClock.isAvailable() ? FULL_MENU_ITEMS : BASE_MENU_ITEMS;
 
-  // Clamp statusBarProgressBar and statusBarTitle in case of corrupt/migrated data
+  // Clamp enum-valued settings in case of corrupt/migrated data
+  if (SETTINGS.statusBarPageCount >= PAGE_COUNT_ITEMS) {
+    SETTINGS.statusBarPageCount = CrossPointSettings::STATUS_BAR_PAGE_COUNT::CHAPTER_PAGE_COUNT;
+  }
+
   if (SETTINGS.statusBarProgressBar >= PROGRESS_BAR_ITEMS) {
     SETTINGS.statusBarProgressBar = CrossPointSettings::STATUS_BAR_PROGRESS_BAR::HIDE_PROGRESS;
   }
@@ -163,8 +171,12 @@ void StatusBarSettingsActivity::loop() {
 void StatusBarSettingsActivity::handleSelection() {
   switch (selectedIndex) {
     case ITEM_CHAPTER_PAGE_COUNT:
-      SETTINGS.statusBarChapterPageCount = (SETTINGS.statusBarChapterPageCount + 1) % 2;
-      break;
+      optionPopup.show(StrId::STR_CHAPTER_PAGE_COUNT, pageCountNames, PAGE_COUNT_ITEMS, SETTINGS.statusBarPageCount,
+                       [this](int idx) {
+                         SETTINGS.statusBarPageCount = idx;
+                         SETTINGS.saveToFile();
+                       });
+      return;
     case ITEM_BOOK_PROGRESS_PERCENTAGE:
       SETTINGS.statusBarBookProgressPercentage = (SETTINGS.statusBarBookProgressPercentage + 1) % 2;
       break;
@@ -236,7 +248,7 @@ void StatusBarSettingsActivity::render(RenderLock&&) {
       [](int index) -> std::string {
         switch (index) {
           case ITEM_CHAPTER_PAGE_COUNT:
-            return SETTINGS.statusBarChapterPageCount ? tr(STR_SHOW) : tr(STR_HIDE);
+            return I18N.get(pageCountNames[SETTINGS.statusBarPageCount]);
           case ITEM_BOOK_PROGRESS_PERCENTAGE:
             return SETTINGS.statusBarBookProgressPercentage ? tr(STR_SHOW) : tr(STR_HIDE);
           case ITEM_PROGRESS_BAR:

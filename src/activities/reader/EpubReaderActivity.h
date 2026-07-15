@@ -1,5 +1,6 @@
 #pragma once
 #include <Epub.h>
+#include <Epub/BookPages.h>
 #include <Epub/FootnoteEntry.h>
 #include <Epub/Section.h>
 
@@ -23,6 +24,17 @@ class EpubReaderActivity final : public Activity {
   int pagesUntilFullRefresh = 0;
   int cachedSpineIndex = 0;
   int cachedChapterTotalPageCount = 0;
+  // Whole-book page accounting ("page X of Y" across the whole book), active only
+  // when the status bar Page Count is set to Book. Exact counts are harvested from
+  // finalized section caches — nothing extra is persisted (see BookPages.h). Null
+  // while inactive or on OOM; every book-page path degrades to chapter-local counts.
+  // Shared between the render task and loop(): only touch under the RenderLock.
+  std::unique_ptr<BookPageEntry[]> bookPages;
+  // Render params the harvested counts are valid for; a change resets the harvest.
+  Section::RenderParams bookPagesParams;
+  // Next spine index for loop()'s background sweep that peeks other sections'
+  // cached counts (one per tick); >= spine count once the sweep is done.
+  int bookPagesSweepIndex = 0;
   unsigned long lastPageTurnTime = 0UL;
   unsigned long pageTurnDuration = 0UL;
   // Signals that the next render should reposition within the newly loaded section
@@ -113,6 +125,14 @@ class EpubReaderActivity final : public Activity {
   // (used after a settings change re-paginates a chapter). Returns true if currentPage moved.
   // No-op while the section is still building or when the pagination is unchanged (plain resume).
   bool applyDeferredReposition();
+  // (Re)allocate and reset bookPages when the feature turns on or the render params
+  // change. Called from render() (under the RenderLock) where the viewport is known.
+  void ensureBookPages(uint16_t viewportWidth, uint16_t viewportHeight);
+  // Store the current section's exact page count once its pagination is final
+  // (no-op while building or partial). Caller must hold the RenderLock.
+  void recordCurrentSectionPages();
+  // Book-global position for the current page, or nullopt while inactive.
+  std::optional<BookPagePosition> bookPagePosition() const;
   bool saveProgress(int spineIndex, int currentPage, int pageCount);
   // Jump to a percentage of the book (0-100), mapping it to spine and page.
   void jumpToPercent(int percent);

@@ -39,7 +39,33 @@ constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) +
                                  sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) +
                                  sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) +
                                  sizeof(uint32_t) + sizeof(uint32_t);
+
+// Read the render-parameter block of the header (everything between the version
+// byte and pageCount), in writeSectionFileHeader order. The file cursor must sit
+// just past the version byte.
+Section::RenderParams readHeaderRenderParams(HalFile& f) {
+  Section::RenderParams p;
+  serialization::readPod(f, p.fontId);
+  serialization::readPod(f, p.lineCompression);
+  serialization::readPod(f, p.extraParagraphSpacing);
+  serialization::readPod(f, p.paragraphAlignment);
+  serialization::readPod(f, p.viewportWidth);
+  serialization::readPod(f, p.viewportHeight);
+  serialization::readPod(f, p.hyphenationEnabled);
+  serialization::readPod(f, p.embeddedStyle);
+  serialization::readPod(f, p.imageRendering);
+  serialization::readPod(f, p.focusReadingEnabled);
+  return p;
+}
 }  // namespace
+
+bool Section::RenderParams::operator==(const RenderParams& o) const {
+  return fontId == o.fontId && lineCompression == o.lineCompression &&
+         extraParagraphSpacing == o.extraParagraphSpacing && paragraphAlignment == o.paragraphAlignment &&
+         viewportWidth == o.viewportWidth && viewportHeight == o.viewportHeight &&
+         hyphenationEnabled == o.hyphenationEnabled && embeddedStyle == o.embeddedStyle &&
+         imageRendering == o.imageRendering && focusReadingEnabled == o.focusReadingEnabled;
+}
 
 // Out-of-line so the unique_ptr<ChapterHtmlSlimParser> in BuildContext can be
 // constructed/destroyed where the parser's full definition is visible.
@@ -133,31 +159,11 @@ bool Section::loadSectionFile(const int fontId, const float lineCompression, con
     }
     filePartial = (version == SECTION_FILE_PARTIAL_VERSION);
 
-    int fileFontId;
-    uint16_t fileViewportWidth, fileViewportHeight;
-    float fileLineCompression;
-    bool fileExtraParagraphSpacing;
-    uint8_t fileParagraphAlignment;
-    bool fileHyphenationEnabled;
-    bool fileEmbeddedStyle;
-    uint8_t fileImageRendering;
-    bool fileFocusReadingEnabled;
-    serialization::readPod(file, fileFontId);
-    serialization::readPod(file, fileLineCompression);
-    serialization::readPod(file, fileExtraParagraphSpacing);
-    serialization::readPod(file, fileParagraphAlignment);
-    serialization::readPod(file, fileViewportWidth);
-    serialization::readPod(file, fileViewportHeight);
-    serialization::readPod(file, fileHyphenationEnabled);
-    serialization::readPod(file, fileEmbeddedStyle);
-    serialization::readPod(file, fileImageRendering);
-    serialization::readPod(file, fileFocusReadingEnabled);
-
-    if (fontId != fileFontId || lineCompression != fileLineCompression ||
-        extraParagraphSpacing != fileExtraParagraphSpacing || paragraphAlignment != fileParagraphAlignment ||
-        viewportWidth != fileViewportWidth || viewportHeight != fileViewportHeight ||
-        hyphenationEnabled != fileHyphenationEnabled || embeddedStyle != fileEmbeddedStyle ||
-        imageRendering != fileImageRendering || focusReadingEnabled != fileFocusReadingEnabled) {
+    const RenderParams fileParams = readHeaderRenderParams(file);
+    const RenderParams params = {fontId,         lineCompression,    extraParagraphSpacing, paragraphAlignment,
+                                 viewportWidth,  viewportHeight,     hyphenationEnabled,    embeddedStyle,
+                                 imageRendering, focusReadingEnabled};
+    if (!(fileParams == params)) {
       file.close();
       LOG_ERR("SCT", "Deserialization failed: Parameters do not match");
       clearCache();
@@ -754,7 +760,7 @@ std::string Section::getTextFromSectionFile() {
   return fullText;
 }
 
-std::optional<uint16_t> Section::getCachedPageCount() const {
+std::optional<uint16_t> Section::getCachedPageCount(const RenderParams* mustMatch) const {
   HalFile f;
   if (!Storage.openFileForRead("SCT", filePath, f)) {
     return std::nullopt;
@@ -771,6 +777,12 @@ std::optional<uint16_t> Section::getCachedPageCount() const {
   uint8_t version;
   serialization::readPod(f, version);
   if (version != SECTION_FILE_VERSION) {
+    return std::nullopt;
+  }
+
+  // A file cached under other render settings paginates differently; its count is
+  // only stale-valid for rough mapping, so reject it when the caller needs a match.
+  if (mustMatch && !(readHeaderRenderParams(f) == *mustMatch)) {
     return std::nullopt;
   }
 

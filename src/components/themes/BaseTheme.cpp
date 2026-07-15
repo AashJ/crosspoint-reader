@@ -27,7 +27,8 @@ constexpr int bookmarkStatusIconGap = 4;
 constexpr int bookmarkStatusIconTopCrop = 2;
 
 bool statusBarTextLaneVisible() {
-  return SETTINGS.statusBarChapterPageCount || SETTINGS.statusBarBookProgressPercentage ||
+  return SETTINGS.statusBarPageCount != CrossPointSettings::STATUS_BAR_PAGE_COUNT::HIDE_PAGE_COUNT ||
+         SETTINGS.statusBarBookProgressPercentage ||
          SETTINGS.statusBarTitle != CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE || SETTINGS.statusBarBattery ||
          (SETTINGS.statusBarClock && halClock.isAvailable());
 }
@@ -765,20 +766,23 @@ void BaseTheme::drawStatusBar(GfxRenderer& renderer, const float bookProgress, c
   int leftClusterWidth = 0;
   int rightClusterWidth = 0;
 
-  if (SETTINGS.statusBarBookProgressPercentage || SETTINGS.statusBarChapterPageCount) {
+  const bool showPageCount = SETTINGS.statusBarPageCount != CrossPointSettings::STATUS_BAR_PAGE_COUNT::HIDE_PAGE_COUNT;
+  if (SETTINGS.statusBarBookProgressPercentage || showPageCount) {
     // Right aligned text for progress counter
     char progressStr[32];
 
-    // Prefix the page count with "~" while a still-building spine only yields an estimated total.
+    // Mark the total with "~" while it is only an estimate (a still-building spine's
+    // watermark, or a whole-book total with not-yet-paginated chapters). The current
+    // page is always exact, so the marker sits on the total.
     const char* estimatePrefix = pageCountEstimated ? "~" : "";
 
-    if (SETTINGS.statusBarBookProgressPercentage && SETTINGS.statusBarChapterPageCount) {
-      snprintf(progressStr, sizeof(progressStr), "%s%d/%d  %.0f%%", estimatePrefix, currentPage, pageCount,
+    if (SETTINGS.statusBarBookProgressPercentage && showPageCount) {
+      snprintf(progressStr, sizeof(progressStr), "%d/%s%d  %.0f%%", currentPage, estimatePrefix, pageCount,
                bookProgress);
     } else if (SETTINGS.statusBarBookProgressPercentage) {
       snprintf(progressStr, sizeof(progressStr), "%.0f%%", bookProgress);
     } else {
-      snprintf(progressStr, sizeof(progressStr), "%s%d/%d", estimatePrefix, currentPage, pageCount);
+      snprintf(progressStr, sizeof(progressStr), "%d/%s%d", currentPage, estimatePrefix, pageCount);
     }
 
     int progressTextWidth = renderer.getTextWidth(SMALL_FONT_ID, progressStr);

@@ -44,6 +44,22 @@ constexpr int PAGE_TURN_RATES[] = {1, 1, 3, 6, 12};
 constexpr size_t initialBookmarkCacheCapacity = 16;
 constexpr float bookmarkProgressEpsilon = 0.0001f;
 
+// The render parameters the reader paginates with, as passed to loadSectionFile /
+// createSectionFile / startBuild below. Used to validate other sections' cached
+// page counts and to detect when a settings change invalidates the harvest.
+Section::RenderParams readerRenderParams(const uint16_t viewportWidth, const uint16_t viewportHeight) {
+  return {SETTINGS.getReaderFontId(),
+          SETTINGS.getReaderLineCompression(),
+          static_cast<bool>(SETTINGS.extraParagraphSpacing),
+          SETTINGS.paragraphAlignment,
+          viewportWidth,
+          viewportHeight,
+          static_cast<bool>(SETTINGS.hyphenationEnabled),
+          static_cast<bool>(SETTINGS.embeddedStyle),
+          SETTINGS.imageRendering,
+          static_cast<bool>(SETTINGS.focusReadingEnabled)};
+}
+
 int clampPercent(int percent) {
   if (percent < 0) {
     return 0;
@@ -315,6 +331,25 @@ void EpubReaderActivity::loop() {
         // The chapter re-paginated since the saved progress (settings changed): we now know the
         // real page count, so re-render at the remapped page. No-op for an unchanged resume.
         requestUpdate();
+      }
+    }
+  }
+
+  // Whole-book page counter: harvest one other section's cached page count per tick
+  // (a header-only peek), so the total converges to exact without visiting every
+  // chapter. Idle-priority — skipped whenever a render is pending or a build is
+  // running. No re-render is requested; the counter refreshes on the next page turn.
+  if (bookPages && bookPagesSweepIndex < epub->getSpineItemsCount() && !RenderLock::peek() &&
+      !(section && section->isBuilding())) {
+    RenderLock lock;
+    // Re-check under the lock: render() may have just reset/reallocated the table.
+    if (bookPages && bookPagesSweepIndex < epub->getSpineItemsCount()) {
+      const int index = bookPagesSweepIndex++;
+      if (bookPages[index].pages < 0) {
+        const Section peekSection(epub, index, renderer);
+        if (const auto count = peekSection.getCachedPageCount(&bookPagesParams)) {
+          bookPages[index].pages = *count;
+        }
       }
     }
   }
@@ -980,6 +1015,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   buildViewportWidth = viewportWidth;
   buildViewportHeight = viewportHeight;
 
+  ensureBookPages(viewportWidth, viewportHeight);
+
   if (!section) {
     const auto filepath = epub->getSpineItem(currentSpineIndex).href;
     LOG_DBG("ERS", "Loading file: %s, index: %d", filepath.c_str(), currentSpineIndex);
@@ -1222,6 +1259,8 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   // a plain resume / unchanged pagination). If still building, this defers to loop() on completion.
   applyDeferredReposition();
 
+  recordCurrentSectionPages();
+
   renderer.clearScreen();
 
   if (section->pageCount == 0) {
@@ -1329,6 +1368,59 @@ bool EpubReaderActivity::applyDeferredReposition() {
   }
   cachedChapterTotalPageCount = 0;  // consumed; don't read cached progress again
   return changed;
+}
+
+void EpubReaderActivity::ensureBookPages(const uint16_t viewportWidth, const uint16_t viewportHeight) {
+  if (SETTINGS.statusBarPageCount != CrossPointSettings::STATUS_BAR_PAGE_COUNT::BOOK_PAGE_COUNT) {
+    bookPages.reset();
+    return;
+  }
+  const Section::RenderParams params = readerRenderParams(viewportWidth, viewportHeight);
+  if (bookPages && params == bookPagesParams) {
+    return;
+  }
+  // First render, or a render-params change (font/orientation/...): the harvested
+  // counts are for the old pagination, so start over. The section caches themselves
+  // are the persistence; there is nothing else to invalidate.
+  bookPagesParams = params;
+  bookPagesSweepIndex = 0;
+  bookPages.reset();
+  const int sectionCount = epub->getSpineItemsCount();
+  if (sectionCount <= 0) {
+    return;
+  }
+  // 8 bytes per spine item, held for the reading session; freed with the activity
+  // or when the feature is switched off. On OOM stays null (chapter-local counts).
+  bookPages = makeUniqueNoThrow<BookPageEntry[]>(sectionCount);
+  if (!bookPages) {
+    LOG_ERR("ERS", "OOM: book page table (%d sections)", sectionCount);
+    return;
+  }
+  size_t prev = 0;
+  for (int i = 0; i < sectionCount; ++i) {
+    const size_t cum = epub->getCumulativeSpineItemSize(i);
+    bookPages[i].bytes = static_cast<uint32_t>(cum >= prev ? cum - prev : 0);
+    prev = cum;
+  }
+}
+
+void EpubReaderActivity::recordCurrentSectionPages() {
+  // Only a finalized section's pageCount is the chapter total; a building or
+  // partial section's is just its current watermark.
+  if (!bookPages || !section || section->isBuilding() || section->isPartial()) {
+    return;
+  }
+  if (currentSpineIndex >= 0 && currentSpineIndex < epub->getSpineItemsCount()) {
+    bookPages[currentSpineIndex].pages = section->pageCount;
+  }
+}
+
+std::optional<BookPagePosition> EpubReaderActivity::bookPagePosition() const {
+  if (!bookPages || !section) {
+    return std::nullopt;
+  }
+  return computeBookPagePosition(bookPages.get(), epub->getSpineItemsCount(), currentSpineIndex, section->currentPage,
+                                 section->estimatedTotalPages());
 }
 
 bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
@@ -1512,9 +1604,20 @@ void EpubReaderActivity::renderStatusBar() const {
   // Calculate progress in book. Use the estimated total while a giant spine is still building so
   // "page X of Y" and the progress bar don't read off the small build watermark.
   const int currentPage = section->currentPage + 1;
-  const float pageCount = section->estimatedTotalPages();
+  const int pageCount = section->estimatedTotalPages();
   const float sectionChapterProg = (pageCount > 0) ? (static_cast<float>(currentPage) / pageCount) : 0;
   const float bookProgress = epub->calculateProgress(currentSpineIndex, sectionChapterProg) * 100;
+
+  // Page counter values: whole-book numbers when Page Count is set to Book (and the
+  // table is alive), otherwise chapter-local. The progress bar stays on bookProgress.
+  int counterPage = currentPage;
+  int counterTotal = pageCount;
+  bool counterIsEstimate = section->isBuilding();
+  if (const auto book = bookPagePosition()) {
+    counterPage = book->currentPage;
+    counterTotal = book->totalPages;
+    counterIsEstimate = book->isEstimate;
+  }
 
   std::string title;
 
@@ -1543,8 +1646,8 @@ void EpubReaderActivity::renderStatusBar() const {
     title = epub->getTitle();
   }
 
-  GUI.drawStatusBar(renderer, bookProgress, currentPage, pageCount, title, 0, textYOffset, true, currentPageBookmarked,
-                    section->isBuilding());
+  GUI.drawStatusBar(renderer, bookProgress, counterPage, counterTotal, title, 0, textYOffset, true,
+                    currentPageBookmarked, counterIsEstimate);
 }
 
 void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool savePosition) {

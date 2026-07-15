@@ -58,6 +58,14 @@ class CrossPointSettings {
     HIDE_PROGRESS = 2,
     STATUS_BAR_PROGRESS_BAR_COUNT
   };
+  // Values 0/1 keep the meaning of the old show/hide toggle (persisted under the
+  // legacy "statusBarChapterPageCount" key), so existing settings files load as-is.
+  enum STATUS_BAR_PAGE_COUNT {
+    HIDE_PAGE_COUNT = 0,
+    CHAPTER_PAGE_COUNT = 1,
+    BOOK_PAGE_COUNT = 2,
+    STATUS_BAR_PAGE_COUNT_COUNT
+  };
   enum STATUS_BAR_PROGRESS_BAR_THICKNESS {
     PROGRESS_BAR_THIN = 0,
     PROGRESS_BAR_NORMAL = 1,
@@ -189,7 +197,8 @@ class CrossPointSettings {
   uint8_t sleepScreenCoverFilter = NO_FILTER;
   // Status bar settings (statusBar retained for migration only)
   uint8_t statusBar = FULL;
-  uint8_t statusBarChapterPageCount = 1;
+  // STATUS_BAR_PAGE_COUNT; persisted under the legacy "statusBarChapterPageCount" key.
+  uint8_t statusBarPageCount = CHAPTER_PAGE_COUNT;
   uint8_t statusBarBookProgressPercentage = 1;
   uint8_t statusBarProgressBar = HIDE_PROGRESS;
   uint8_t statusBarProgressBarThickness = PROGRESS_BAR_NORMAL;
