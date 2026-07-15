@@ -21,6 +21,7 @@
 // Minimum file size (in bytes) to show indexing popup - smaller chapters don't benefit from it
 constexpr size_t MIN_SIZE_FOR_POPUP = 10 * 1024;  // 10KB
 constexpr size_t PARSE_BUFFER_SIZE = 1024;
+constexpr size_t MAX_BUFFERED_TEXT_WORDS = 300;
 
 // Hard cap on the number of anchor IDs recorded per chapter. Legitimate navigation
 // anchors (TOC entries, footnotes, cross-references) rarely exceed a few hundred per
@@ -201,6 +202,8 @@ void ChapterHtmlSlimParser::flushPendingAnchor() {
 
 // flush the contents of partWordBuffer to currentTextBlock
 void ChapterHtmlSlimParser::flushPartWordBuffer() {
+  flushLongTextBlockIfNeeded();
+
   // Determine font style from depth-based tracking and CSS effective style
   const bool isBold = boldUntilDepth < depth || effectiveBold;
   const bool isItalic = italicUntilDepth < depth || effectiveItalic;
@@ -226,6 +229,20 @@ void ChapterHtmlSlimParser::flushPartWordBuffer() {
   partWordBufferIndex = 0;
   nextWordContinues = false;
   listItemBulletOnly = false;
+}
+
+void ChapterHtmlSlimParser::flushLongTextBlockIfNeeded() {
+  if (!currentTextBlock || currentTextBlock->size() <= MAX_BUFFERED_TEXT_WORDS) {
+    return;
+  }
+
+  LOG_DBG("EHP", "Text block too long, splitting into multiple pages");
+  const int horizontalInset = currentTextBlock->getBlockStyle().totalHorizontalInset();
+  const uint16_t effectiveWidth =
+      (horizontalInset < viewportWidth) ? static_cast<uint16_t>(viewportWidth - horizontalInset) : viewportWidth;
+  currentTextBlock->layoutAndExtractLines(
+      renderer, fontId, effectiveWidth,
+      [this](const std::shared_ptr<TextBlock>& textBlock) { this->addLineToPage(textBlock); }, false);
 }
 
 // start a new text block if needed
@@ -1155,20 +1172,9 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
     self->partWordBuffer[self->partWordBufferIndex++] = s[i];
   }
 
-  // If we have > 750 words buffered up, perform the layout and consume out all but the last line
-  // There should be enough here to build out 1-2 full pages and doing this will free up a lot of
-  // memory.
+  // If we have a large number of words buffered up, perform the layout and consume out all but the last line.
   // Spotted when reading Intermezzo, there are some really long text blocks in there.
-  if (self->currentTextBlock->size() > 750) {
-    LOG_DBG("EHP", "Text block too long, splitting into multiple pages");
-    const int horizontalInset = self->currentTextBlock->getBlockStyle().totalHorizontalInset();
-    const uint16_t effectiveWidth = (horizontalInset < self->viewportWidth)
-                                        ? static_cast<uint16_t>(self->viewportWidth - horizontalInset)
-                                        : self->viewportWidth;
-    self->currentTextBlock->layoutAndExtractLines(
-        self->renderer, self->fontId, effectiveWidth,
-        [self](const std::shared_ptr<TextBlock>& textBlock) { self->addLineToPage(textBlock); }, false);
-  }
+  self->flushLongTextBlockIfNeeded();
 }
 
 void XMLCALL ChapterHtmlSlimParser::defaultHandlerExpand(void* userData, const XML_Char* s, const int len) {
