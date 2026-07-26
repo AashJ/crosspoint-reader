@@ -1545,6 +1545,8 @@
   </div>
 </div>
 
+<div id="plugin-container"></div>
+
 <div class="card">
   <p style="text-align: center; color: #95a5a6; margin: 0;">
     CrossPoint E-Reader • Open Source
@@ -1936,6 +1938,9 @@
   async function hydrate() {
     // Fetch CrossPoint version
     fetchVersion();
+
+    // Load any SD-hosted plugins that mount on the File Manager page.
+    loadPlugins('files');
 
     // Close modals when clicking overlay - call proper cleanup functions
     document.querySelectorAll('.modal-overlay').forEach(function(overlay) {
@@ -5962,6 +5967,7 @@ function retryAllFailedUploads() {
 
     xhr.send(formData);
   }
+<!--#include file="shared/PluginHost.js.inc" -->
   hydrate();
 </script>
 </body>

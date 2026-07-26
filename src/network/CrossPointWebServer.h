@@ -140,4 +140,18 @@ class CrossPointWebServer {
   void handleGetWifiNetworks() const;
   void handlePostWifiNetwork();
   void handleDeleteWifiNetwork();
+
+  // Browser-side plugins: JS bundles on the SD card (/.crosspoint/plugins/<name>/)
+  // that the web UI discovers, loads, and runs. A manifest's "mount" places a
+  // plugin on the Settings or File Manager page, so plugins can extend either —
+  // e.g. a File Manager plugin that sorts EPUBs into per-author folders, or a
+  // Settings plugin that needs device capabilities a static page can't have
+  // (an outbound HTTPS relay, since the browser can't call other origins; SD
+  // read/write; crypto primitives).
+  void handlePluginList() const;   // GET  /api/plugins   -> discovered plugins
+  void handlePluginFile() const;   // GET  /plugin?name&file -> serve SD file
+  void handleRelay();              // POST /api/relay     -> device makes an HTTP(S) call
+  void handleCrypto();             // POST /api/crypto    -> generic crypto primitive (base64 I/O)
+  void handleFetch();              // POST /api/fetch     -> device downloads a URL to SD
+  void handlePluginFs();           // POST /api/plugin-fs -> plugin writes a small file to SD
 };

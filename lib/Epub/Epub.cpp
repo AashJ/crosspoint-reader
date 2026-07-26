@@ -2,6 +2,10 @@
 
 #include <FsHelpers.h>
 #include <HalStorage.h>
+
+#include <cstdlib>
+#include <cstring>
+#include <vector>
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
 #include <PngToBmpConverter.h>
@@ -356,6 +360,24 @@ void Epub::parseCssFiles() const {
 // load in the meta data for the epub file
 bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   LOG_DBG("EBP", "Loading ePub: %s", filepath.c_str());
+
+  // Protected content (optional): for unprotected content — or a device without
+  // the content key — this returns null and the book reads normally. For
+  // protected content it returns an accessor we route protected item reads
+  // through; content stays encrypted on disk. A hard error (no key, expired)
+  // refuses the open with a user-presentable reason.
+  {
+    std::string err;
+    decryptor = freeink::content::openProtectedBook(filepath, err);
+    if (!err.empty()) {
+      LOG_ERR("EBP", "protected content unavailable: %s", err.c_str());
+      protectionError = err;
+      return false;
+    }
+    if (decryptor) {
+      LOG_DBG("EBP", "protected content; on-read access path open");
+    }
+  }
 
   // Initialize spine/TOC cache
   bookMetadataCache.reset(new BookMetadataCache(cachePath));
@@ -756,6 +778,23 @@ uint8_t* Epub::readItemContentsToBytes(const std::string& itemHref, size_t* size
 
   const std::string path = FsHelpers::normalisePath(itemHref);
 
+  // Protected content: read protected items on demand (in memory only).
+  if (decryptor && decryptor->isEncrypted(path)) {
+    std::vector<uint8_t> plain;
+    if (!decryptor->decrypt(path, plain)) {
+      LOG_ERR("EBP", "content read failed for %s", path.c_str());
+      return nullptr;
+    }
+    // Caller owns the returned buffer (malloc'd like ZipFile's result).
+    const size_t total = plain.size() + (trailingNullByte ? 1 : 0);
+    uint8_t* content = static_cast<uint8_t*>(malloc(total));
+    if (!content) return nullptr;
+    memcpy(content, plain.data(), plain.size());
+    if (trailingNullByte) content[plain.size()] = 0;
+    if (size) *size = plain.size();
+    return content;
+  }
+
   const auto content = ZipFile(filepath).readFileToMemory(path.c_str(), size, trailingNullByte);
   if (!content) {
     LOG_DBG("EBP", "Failed to read item %s", path.c_str());
@@ -773,6 +812,18 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
   }
 
   const std::string path = FsHelpers::normalisePath(itemHref);
+
+  // Protected content: read whole-entry into memory, then write to the stream
+  // (chapters are small; images/fonts are typically not protected).
+  if (decryptor && decryptor->isEncrypted(path)) {
+    std::vector<uint8_t> plain;
+    if (!decryptor->decrypt(path, plain)) {
+      LOG_ERR("EBP", "content read failed for %s", path.c_str());
+      return false;
+    }
+    return plain.empty() || out.write(plain.data(), plain.size()) == plain.size();
+  }
+
   return ZipFile(filepath).readFileToStream(path.c_str(), out, chunkSize, allowEarlyStop);
 }
 

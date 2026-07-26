@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <ContentProtection.h>
+
 #include "Epub/BookMetadataCache.h"
 #include "Epub/css/CssParser.h"
 
@@ -29,6 +31,12 @@ class Epub {
   std::unique_ptr<CssParser> cssParser;
   // CSS files
   std::vector<std::string> cssFiles;
+  // Protected-content read path: set in load() when the content is protected
+  // and this device holds the content key. Protected items are read into memory
+  // only — content stays encrypted at rest. Null for unprotected content.
+  std::unique_ptr<freeink::content::ContentDecryptor> decryptor;
+  // User-presentable reason load() refused protected content (empty otherwise).
+  std::string protectionError;
 
   bool findContentOpfFile(std::string* contentOpfFile) const;
   bool parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, bool writeSpineEntries = true);
@@ -49,6 +57,9 @@ class Epub {
   void setupCacheDir() const;
   const std::string& getCachePath() const;
   const std::string& getPath() const;
+  // User-presentable reason protected content refused to open (empty otherwise).
+  const std::string& getProtectionError() const { return protectionError; }
+  bool isProtected() const { return decryptor != nullptr; }
   const std::string& getTitle() const;
   const std::string& getAuthor() const;
   const std::string& getLanguage() const;
