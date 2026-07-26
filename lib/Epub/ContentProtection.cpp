@@ -84,13 +84,13 @@ std::unique_ptr<ContentDecryptor> openProtectedBook(const std::string& epubPath,
   ZipScan probe;
   if (!probe.open(source) || !probe.find("META-INF/encryption.xml")) return nullptr;
 
-  // Load the access credential.
+  // Credential is optional at this point: a book carrying encryption.xml may
+  // only obfuscate its embedded fonts (not content-protected) and need no
+  // credential. Load it if present; demand it only once we know the content is
+  // actually encrypted.
   SdByteSource credSource(kCredentialPath);
   Credential credential;
-  if (!credSource.open() || !parseCredential(credSource, &credential)) {
-    err = "no content access key on this device";
-    return nullptr;
-  }
+  const bool haveCredential = credSource.open() && parseCredential(credSource, &credential);
 
   auto book = makeUniqueNoThrow<ProtectedBook>();
   if (!book) {
@@ -114,9 +114,13 @@ std::unique_ptr<ContentDecryptor> openProtectedBook(const std::string& epubPath,
     }
   }
   if (!book->open(source, crypto(), credential, rightsOverride)) {
-    err = "cannot open protected content: " + book->lastError();
+    err = haveCredential ? ("cannot open protected content: " + book->lastError())
+                         : "no content access key on this device";
     return nullptr;
   }
+  // encryption.xml was present but lists no protected content (e.g. font
+  // obfuscation) — not a protected book; let the reader open it normally.
+  if (!book->isProtected()) return nullptr;
 
   const int64_t now = static_cast<int64_t>(time(nullptr));
   if (book->isExpired(now)) {

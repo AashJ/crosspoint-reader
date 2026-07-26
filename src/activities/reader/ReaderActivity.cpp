@@ -68,6 +68,17 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path) {
     return epub;
   }
 
+  // A genuinely content-protected book we can't open here (no/invalid credential,
+  // wrong account, expired) — tell the user instead of silently dropping back to
+  // the library. Font-obfuscated (non-DRM) EPUBs open fine and never reach here.
+  if (!epub->getProtectionError().empty()) {
+    LOG_ERR("READER", "protected book unavailable: %s", epub->getProtectionError().c_str());
+    renderer.clearScreen();
+    GUI.drawPopup(renderer, "DRM-protected file");
+    delay(2500);
+    return nullptr;
+  }
+
   LOG_ERR("READER", "Failed to load epub");
   return nullptr;
 }
