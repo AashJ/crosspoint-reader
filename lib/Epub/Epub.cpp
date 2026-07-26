@@ -2,15 +2,15 @@
 
 #include <FsHelpers.h>
 #include <HalStorage.h>
-
-#include <cstdlib>
-#include <cstring>
-#include <vector>
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
 #include <PngToBmpConverter.h>
 #include <Utf8.h>
 #include <ZipFile.h>
+
+#include <cstdlib>
+#include <cstring>
+#include <vector>
 
 #include "Epub/parsers/ContainerParser.h"
 #include "Epub/parsers/ContentOpfParser.h"

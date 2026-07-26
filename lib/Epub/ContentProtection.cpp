@@ -6,17 +6,15 @@
 // lookup, and the openProtectedBook() entry point the reader calls. It lives in
 // the firmware — not the SDK lib — so the portable lib carries no HAL dependency.
 
+#include <ByteSource.h>
 #include <ContentProtection.h>
-
+#include <Credential.h>
 #include <HalStorage.h>
 #include <Memory.h>
-#include <time.h>
-
-#include <ByteSource.h>
-#include <Credential.h>
 #include <ProtectedBook.h>
 #include <WolfsslCrypto.h>
 #include <Zip.h>
+#include <time.h>
 
 namespace freeink {
 namespace content {
@@ -108,8 +106,10 @@ std::unique_ptr<ContentDecryptor> openProtectedBook(const std::string& epubPath,
       if (rsize > 0 && rsize <= 256 * 1024) {
         rightsOverride.resize(static_cast<size_t>(rsize));
         const int32_t rn = rightsSource.readAt(0, rightsOverride.data(), static_cast<uint32_t>(rsize));
-        if (rn <= 0) rightsOverride.clear();
-        else rightsOverride.resize(static_cast<size_t>(rn));
+        if (rn <= 0)
+          rightsOverride.clear();
+        else
+          rightsOverride.resize(static_cast<size_t>(rn));
       }
     }
   }

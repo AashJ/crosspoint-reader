@@ -2,14 +2,14 @@
 
 #include <ArduinoJson.h>
 #include <Crypto.h>
-#include <SecureHttpClient.h>
-#include <Util.h>
-#include <WolfsslCrypto.h>
 #include <FsHelpers.h>
 #include <HalGPIO.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <SecureHttpClient.h>
+#include <Util.h>
 #include <WiFi.h>
+#include <WolfsslCrypto.h>
 #include <esp_efuse.h>
 #include <esp_efuse_table.h>
 
@@ -1822,14 +1822,22 @@ std::string b64encode(const uint8_t* data, size_t len) {
   size_t i = 0;
   for (; i + 3 <= len; i += 3) {
     const uint32_t n = (uint32_t(data[i]) << 16) | (uint32_t(data[i + 1]) << 8) | data[i + 2];
-    out += T[(n >> 18) & 63]; out += T[(n >> 12) & 63]; out += T[(n >> 6) & 63]; out += T[n & 63];
+    out += T[(n >> 18) & 63];
+    out += T[(n >> 12) & 63];
+    out += T[(n >> 6) & 63];
+    out += T[n & 63];
   }
   if (len - i == 1) {
     const uint32_t n = uint32_t(data[i]) << 16;
-    out += T[(n >> 18) & 63]; out += T[(n >> 12) & 63]; out += "==";
+    out += T[(n >> 18) & 63];
+    out += T[(n >> 12) & 63];
+    out += "==";
   } else if (len - i == 2) {
     const uint32_t n = (uint32_t(data[i]) << 16) | (uint32_t(data[i + 1]) << 8);
-    out += T[(n >> 18) & 63]; out += T[(n >> 12) & 63]; out += T[(n >> 6) & 63]; out += "=";
+    out += T[(n >> 18) & 63];
+    out += T[(n >> 12) & 63];
+    out += T[(n >> 6) & 63];
+    out += "=";
   }
   return out;
 }
@@ -1840,8 +1848,7 @@ std::string b64encode(const std::vector<uint8_t>& v) { return b64encode(v.data()
 bool relayHostAllowed(const String& plugin, const std::string& url) {
   const std::string host = urlHost(url);
   if (host.empty() || !safeComponent(plugin)) return false;
-  const std::string manifest =
-      readSmallSdFile(std::string(kPluginsDir) + "/" + plugin.c_str() + "/manifest.json");
+  const std::string manifest = readSmallSdFile(std::string(kPluginsDir) + "/" + plugin.c_str() + "/manifest.json");
   if (manifest.empty()) return false;
   JsonDocument m;
   if (deserializeJson(m, manifest) != DeserializationError::Ok || !m["allowedHosts"].is<JsonArray>()) return false;
@@ -1859,9 +1866,7 @@ bool relayHostAllowed(const String& plugin, const std::string& url) {
 }
 
 // A destination path is safe to write if it is absolute and has no parent refs.
-bool safeWritePath(const std::string& p) {
-  return p.size() > 1 && p[0] == '/' && p.find("..") == std::string::npos;
-}
+bool safeWritePath(const std::string& p) { return p.size() > 1 && p[0] == '/' && p.find("..") == std::string::npos; }
 }  // namespace
 
 // POST /api/crypto {op, ...base64 fields...} -> {data|public|private|key|cert, ...}
@@ -1869,7 +1874,10 @@ bool safeWritePath(const std::string& p) {
 // Stateless; keys are base64 in the request/reply.
 void CrossPointWebServer::handleCrypto() {
   using namespace freeink::content;
-  if (!server->hasArg("plain")) { server->send(400, "application/json", "{\"error\":\"missing body\"}"); return; }
+  if (!server->hasArg("plain")) {
+    server->send(400, "application/json", "{\"error\":\"missing body\"}");
+    return;
+  }
   JsonDocument req;
   if (deserializeJson(req, server->arg("plain")) != DeserializationError::Ok) {
     server->send(400, "application/json", "{\"error\":\"bad json\"}");
@@ -1908,21 +1916,27 @@ void CrossPointWebServer::handleCrypto() {
       if (c.aes128CbcEncrypt(reinterpret_cast<const uint8_t*>(k.data()), reinterpret_cast<const uint8_t*>(iv.data()),
                              reinterpret_cast<const uint8_t*>(d.data()), d.size(), out.data()))
         resp["data"] = b64encode(out);
-      else resp["error"] = "aesenc failed";
+      else
+        resp["error"] = "aesenc failed";
     } else {
-      if (d.size() % 16 != 0) { resp["error"] = "data not block-aligned"; }
-      else {
+      if (d.size() % 16 != 0) {
+        resp["error"] = "data not block-aligned";
+      } else {
         std::vector<uint8_t> out(d.size());
         if (c.aes128CbcDecrypt(reinterpret_cast<const uint8_t*>(k.data()), reinterpret_cast<const uint8_t*>(iv.data()),
                                reinterpret_cast<const uint8_t*>(d.data()), d.size(), out.data()))
           resp["data"] = b64encode(out);
-        else resp["error"] = "aesdec failed";
+        else
+          resp["error"] = "aesdec failed";
       }
     }
   } else if (op == "keygen") {
     RsaKeyPairDer kp;
-    if (c.rsaGenerate(&kp)) { resp["public"] = b64encode(kp.spki); resp["private"] = b64encode(kp.pkcs8); }
-    else resp["error"] = "keygen failed";
+    if (c.rsaGenerate(&kp)) {
+      resp["public"] = b64encode(kp.spki);
+      resp["private"] = b64encode(kp.pkcs8);
+    } else
+      resp["error"] = "keygen failed";
   } else if (op == "pubencrypt") {
     const std::string cert = dec("cert"), d = dec("data");
     uint8_t out[512];
@@ -1930,24 +1944,29 @@ void CrossPointWebServer::handleCrypto() {
     if (c.rsaPublicEncrypt(reinterpret_cast<const uint8_t*>(cert.data()), cert.size(),
                            reinterpret_cast<const uint8_t*>(d.data()), d.size(), out, sizeof(out), &olen))
       resp["data"] = b64encode(out, olen);
-    else resp["error"] = "pubencrypt failed";
+    else
+      resp["error"] = "pubencrypt failed";
   } else if (op == "sign") {
     const std::string priv = dec("private"), h = dec("hash");
-    if (h.size() != 20) { resp["error"] = "hash must be 20 bytes"; }
-    else {
+    if (h.size() != 20) {
+      resp["error"] = "hash must be 20 bytes";
+    } else {
       uint8_t sig[128];
       if (c.rsaPrivateSignRaw(reinterpret_cast<const uint8_t*>(priv.data()), priv.size(),
                               reinterpret_cast<const uint8_t*>(h.data()), sig))
         resp["data"] = b64encode(sig, 128);
-      else resp["error"] = "sign failed";
+      else
+        resp["error"] = "sign failed";
     }
   } else if (op == "rsaraw") {
     const std::string priv = dec("private"), d = dec("data");
     uint8_t out[256];
     const int32_t n = c.rsaPrivateRaw(reinterpret_cast<const uint8_t*>(priv.data()), priv.size(),
                                       reinterpret_cast<const uint8_t*>(d.data()), d.size(), out, sizeof(out));
-    if (n > 0) resp["data"] = b64encode(out, static_cast<size_t>(n));
-    else resp["error"] = "rsaraw failed";
+    if (n > 0)
+      resp["data"] = b64encode(out, static_cast<size_t>(n));
+    else
+      resp["error"] = "rsaraw failed";
   } else if (op == "pkcs12") {
     const std::string p12 = dec("data");
     const std::string pw = req["password"] | "";
@@ -1955,7 +1974,8 @@ void CrossPointWebServer::handleCrypto() {
     if (c.pkcs12Extract(reinterpret_cast<const uint8_t*>(p12.data()), p12.size(), pw, &key, &cert)) {
       resp["key"] = b64encode(key);
       resp["cert"] = b64encode(cert);
-    } else resp["error"] = "pkcs12 failed";
+    } else
+      resp["error"] = "pkcs12 failed";
   } else {
     resp["error"] = "unknown op";
   }
@@ -1969,7 +1989,10 @@ void CrossPointWebServer::handleCrypto() {
 // Device downloads a URL straight to SD, so a large body never passes through
 // the browser. Host allow-listed per plugin manifest.
 void CrossPointWebServer::handleFetch() {
-  if (!server->hasArg("plain")) { server->send(400, "application/json", "{\"error\":\"missing body\"}"); return; }
+  if (!server->hasArg("plain")) {
+    server->send(400, "application/json", "{\"error\":\"missing body\"}");
+    return;
+  }
   JsonDocument req;
   if (deserializeJson(req, server->arg("plain")) != DeserializationError::Ok) {
     server->send(400, "application/json", "{\"error\":\"bad json\"}");
@@ -1978,16 +2001,30 @@ void CrossPointWebServer::handleFetch() {
   const String plugin = req["plugin"] | "";
   const std::string url = req["url"] | "";
   const std::string dest = req["dest"] | "";
-  if (url.empty() || !safeWritePath(dest)) { server->send(400, "application/json", "{\"error\":\"bad url/dest\"}"); return; }
-  if (!relayHostAllowed(plugin, url)) { server->send(403, "application/json", "{\"error\":\"host not allowed\"}"); return; }
+  if (url.empty() || !safeWritePath(dest)) {
+    server->send(400, "application/json", "{\"error\":\"bad url/dest\"}");
+    return;
+  }
+  if (!relayHostAllowed(plugin, url)) {
+    server->send(403, "application/json", "{\"error\":\"host not allowed\"}");
+    return;
+  }
 
   Storage.remove(dest.c_str());
   HalFile file;
-  if (!Storage.openFileForWrite("PLG", dest, file)) { server->send(500, "application/json", "{\"error\":\"cannot create file\"}"); return; }
+  if (!Storage.openFileForWrite("PLG", dest, file)) {
+    server->send(500, "application/json", "{\"error\":\"cannot create file\"}");
+    return;
+  }
 
   freeink::SecureHttpClient http;
   http.setUserAgent("CrossPoint");
-  if (!http.begin(url)) { file.close(); Storage.remove(dest.c_str()); server->send(502, "application/json", "{\"error\":\"begin failed\"}"); return; }
+  if (!http.begin(url)) {
+    file.close();
+    Storage.remove(dest.c_str());
+    server->send(502, "application/json", "{\"error\":\"begin failed\"}");
+    return;
+  }
   if (req["headers"].is<JsonObject>()) {
     for (JsonPair kv : req["headers"].as<JsonObject>()) {
       const char* v = kv.value().as<const char*>();
@@ -2019,7 +2056,10 @@ void CrossPointWebServer::handleFetch() {
 // POST /api/plugin-fs {plugin, path, data(base64)} -> {ok, bytes}
 // A plugin writes a small file to SD.
 void CrossPointWebServer::handlePluginFs() {
-  if (!server->hasArg("plain")) { server->send(400, "application/json", "{\"error\":\"missing body\"}"); return; }
+  if (!server->hasArg("plain")) {
+    server->send(400, "application/json", "{\"error\":\"missing body\"}");
+    return;
+  }
   JsonDocument req;
   if (deserializeJson(req, server->arg("plain")) != DeserializationError::Ok) {
     server->send(400, "application/json", "{\"error\":\"bad json\"}");
@@ -2028,12 +2068,18 @@ void CrossPointWebServer::handlePluginFs() {
   const String plugin = req["plugin"] | "";
   const std::string path = req["path"] | "";
   const char* dataC = req["data"].as<const char*>();
-  if (!safeComponent(plugin) || !safeWritePath(path)) { server->send(400, "application/json", "{\"error\":\"bad path\"}"); return; }
+  if (!safeComponent(plugin) || !safeWritePath(path)) {
+    server->send(400, "application/json", "{\"error\":\"bad path\"}");
+    return;
+  }
 
   const std::string data = dataC ? freeink::content::base64Decode(std::string(dataC)) : std::string();
   Storage.ensureDirectoryExists("/.crosspoint");
   HalFile f;
-  if (!Storage.openFileForWrite("PLG", path, f)) { server->send(500, "application/json", "{\"error\":\"cannot write\"}"); return; }
+  if (!Storage.openFileForWrite("PLG", path, f)) {
+    server->send(500, "application/json", "{\"error\":\"cannot write\"}");
+    return;
+  }
   const size_t n = data.empty() ? 0 : f.write(reinterpret_cast<const uint8_t*>(data.data()), data.size());
   f.flush();
   f.close();

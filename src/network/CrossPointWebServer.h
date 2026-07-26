@@ -148,10 +148,10 @@ class CrossPointWebServer {
   // Settings plugin that needs device capabilities a static page can't have
   // (an outbound HTTPS relay, since the browser can't call other origins; SD
   // read/write; crypto primitives).
-  void handlePluginList() const;   // GET  /api/plugins   -> discovered plugins
-  void handlePluginFile() const;   // GET  /plugin?name&file -> serve SD file
-  void handleRelay();              // POST /api/relay     -> device makes an HTTP(S) call
-  void handleCrypto();             // POST /api/crypto    -> generic crypto primitive (base64 I/O)
-  void handleFetch();              // POST /api/fetch     -> device downloads a URL to SD
-  void handlePluginFs();           // POST /api/plugin-fs -> plugin writes a small file to SD
+  void handlePluginList() const;  // GET  /api/plugins   -> discovered plugins
+  void handlePluginFile() const;  // GET  /plugin?name&file -> serve SD file
+  void handleRelay();             // POST /api/relay     -> device makes an HTTP(S) call
+  void handleCrypto();            // POST /api/crypto    -> generic crypto primitive (base64 I/O)
+  void handleFetch();             // POST /api/fetch     -> device downloads a URL to SD
+  void handlePluginFs();          // POST /api/plugin-fs -> plugin writes a small file to SD
 };
