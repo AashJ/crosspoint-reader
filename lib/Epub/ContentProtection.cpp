@@ -14,6 +14,7 @@
 #include <ProtectedBook.h>
 #include <WolfsslCrypto.h>
 #include <Zip.h>
+#include <esp_heap_caps.h>
 #include <time.h>
 
 namespace freeink {
@@ -64,12 +65,9 @@ class ProtectedBookDecryptor : public ContentDecryptor {
     return book_->decryptEntry(source, crypto(), itemPath, &out);
   }
 
-  size_t decryptedSize(const std::string& itemPath) const override {
-    return book_->decryptedSize(itemPath);
-  }
+  size_t decryptedSize(const std::string& itemPath) const override { return book_->decryptedSize(itemPath); }
 
-  bool decryptToSink(const std::string& itemPath, ContentChunkSink sink,
-                     void* context) override {
+  bool decryptToSink(const std::string& itemPath, ContentChunkSink sink, void* context) override {
     SdByteSource source(epubPath_);
     if (!source.open()) return false;
     return book_->decryptEntryToSink(source, crypto(), itemPath, sink, context);
@@ -112,10 +110,15 @@ std::unique_ptr<ContentDecryptor> openProtectedBook(const std::string& epubPath,
   // what the server sent. Falls back to a rights.xml injected into the zip.
   std::string rightsOverride;
   {
+    // A real rights document is a few KB; 64KB is a generous ceiling. The
+    // largest-block check keeps the resize below from aborting on OOM (string
+    // growth is a bare allocation under -fno-exceptions).
+    constexpr uint64_t kMaxRightsSize = 64 * 1024;
     SdByteSource rightsSource(epubPath + ".rights");
     if (rightsSource.open()) {
       const uint64_t rsize = rightsSource.size();
-      if (rsize > 0 && rsize <= 256 * 1024) {
+      if (rsize > 0 && rsize <= kMaxRightsSize &&
+          heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) > static_cast<size_t>(rsize) + 8 * 1024) {
         rightsOverride.resize(static_cast<size_t>(rsize));
         const int32_t rn = rightsSource.readAt(0, rightsOverride.data(), static_cast<uint32_t>(rsize));
         if (rn <= 0)
@@ -140,7 +143,9 @@ std::unique_ptr<ContentDecryptor> openProtectedBook(const std::string& epubPath,
     return nullptr;
   }
 
-  return std::unique_ptr<ContentDecryptor>(new ProtectedBookDecryptor(epubPath, std::move(book)));
+  auto decryptor = makeUniqueNoThrow<ProtectedBookDecryptor>(epubPath, std::move(book));
+  if (!decryptor) err = "out of memory";
+  return decryptor;
 }
 
 }  // namespace content

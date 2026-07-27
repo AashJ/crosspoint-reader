@@ -1753,7 +1753,39 @@ void CrossPointWebServer::handleRelay() {
     }
   }
   const std::string body = req["body"] | "";
-  const int status = http.sendRequest(method.c_str(), body);
+  // The response passes through RAM three times below (accumulate, JsonDocument
+  // copy, serialized String), so it is hard-capped. Large payloads must go
+  // through /api/fetch, which streams to SD without buffering. An uncapped
+  // relay of a ~190KB response was measured aborting the firmware: std::string
+  // growth OOMs, and with -fno-exceptions bad_alloc goes straight to abort().
+  static constexpr size_t RELAY_BODY_LIMIT = 32 * 1024;
+  std::string respBody;
+  bool tooLarge = false;
+  bool sized = false;
+  const int status = http.sendRequest(method.c_str(), reinterpret_cast<const uint8_t*>(body.data()), body.size(),
+                                      [&](const uint8_t* data, size_t len) {
+                                        if (!sized) {
+                                          sized = true;
+                                          // Known-oversized: refuse before buffering a single chunk.
+                                          if (http.hasContentLength() && http.getContentLength() > RELAY_BODY_LIMIT) {
+                                            tooLarge = true;
+                                            return false;
+                                          }
+                                          if (http.hasContentLength()) respBody.reserve(http.getContentLength());
+                                        }
+                                        if (respBody.size() + len > RELAY_BODY_LIMIT) {
+                                          tooLarge = true;
+                                          return false;
+                                        }
+                                        respBody.append(reinterpret_cast<const char*>(data), len);
+                                        return true;
+                                      });
+  if (tooLarge) {
+    LOG_ERR("WEB", "Relay response exceeds %u byte cap (url=%s); plugin should use /api/fetch",
+            (unsigned)RELAY_BODY_LIMIT, url.c_str());
+    server->send(413, "application/json", "{\"error\":\"response too large, use /api/fetch\"}");
+    return;
+  }
   if (status < 0) {
     server->send(502, "application/json", "{\"error\":\"transport failure\"}");
     return;
@@ -1761,7 +1793,7 @@ void CrossPointWebServer::handleRelay() {
 
   JsonDocument resp;
   resp["status"] = status;
-  resp["body"] = http.getString();
+  resp["body"] = respBody;
   // Response headers, order- and duplicate-preserving (so every Set-Cookie is
   // visible), as [name, value] pairs. Generic: the relay is just an
   // authenticated HTTP proxy; it attaches no meaning to any header.
@@ -1831,8 +1863,7 @@ void CrossPointWebServer::handleCrypto() {
     const size_t encodedLen = strlen(v);
     std::string decoded;
     decoded.resize((encodedLen * 3) / 4 + 3);
-    const int32_t decodedLen =
-        base64Decode(v, encodedLen, reinterpret_cast<uint8_t*>(decoded.data()), decoded.size());
+    const int32_t decodedLen = base64Decode(v, encodedLen, reinterpret_cast<uint8_t*>(decoded.data()), decoded.size());
     if (decodedLen < 0) return std::string();
     decoded.resize(static_cast<size_t>(decodedLen));
     return decoded;
@@ -1914,8 +1945,8 @@ void CrossPointWebServer::handleCrypto() {
                            reinterpret_cast<const uint8_t*>(d.data()), d.size(), out, sizeof(out), &olen))
       resp["data"] = b64encode(out, olen);
     else
-      resp["error"] = "pubencrypt failed: " + c.lastError + " (cert " + std::to_string(cert.size()) +
-                      "B, data " + std::to_string(d.size()) + "B)";
+      resp["error"] = "pubencrypt failed: " + c.lastError + " (cert " + std::to_string(cert.size()) + "B, data " +
+                      std::to_string(d.size()) + "B)";
   } else if (op == "sign") {
     const std::string priv = dec("private"), h = dec("hash");
     if (h.size() != 20) {
@@ -1957,8 +1988,7 @@ void CrossPointWebServer::handleCrypto() {
         // This PKCS#12 KDF commonly runs for 50,000 rounds, exceeding the web
         // task's normal watchdog window on the ESP32-C3.
         const bool restore = pauseWatchdog();
-        const bool extracted =
-            c.pkcs12Extract(p12, static_cast<size_t>(p12Len), pw, &key, &cert);
+        const bool extracted = c.pkcs12Extract(p12, static_cast<size_t>(p12Len), pw, &key, &cert);
         restoreWatchdog(restore);
         if (extracted) {
           resp["key"] = b64encode(key);
