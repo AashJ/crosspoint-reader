@@ -13,6 +13,7 @@
 #include <Memory.h>
 #include <ProtectedBook.h>
 #include <WolfsslCrypto.h>
+#include <Zip.h>
 #include <time.h>
 
 namespace freeink {
@@ -88,12 +89,15 @@ std::unique_ptr<ContentDecryptor> openProtectedBook(const std::string& epubPath,
   SdByteSource source(epubPath);
   if (!source.open()) return nullptr;
 
-  // ProtectedBook performs the single authoritative ZIP scan. It returns with
-  // isProtected() false for both plain EPUBs and font-obfuscation-only EPUBs,
-  // without attempting key unwrap or content decryption.
-  //
-  // The credential is optional: ProtectedBook only consults it after its
-  // encryption manifest identifies genuinely protected content.
+  // Classify before initializing crypto or loading credentials, then transfer
+  // this same ZIP index into ProtectedBook. Protected EPUBs still scan only
+  // once; plain EPUBs return immediately through the normal reader path.
+  ZipScan scan;
+  if (!scan.open(source) || !scan.find("META-INF/encryption.xml")) return nullptr;
+
+  // A book carrying encryption.xml may only obfuscate its embedded fonts
+  // (not content-protected). The SDK demands the credential only after parsing
+  // the manifest and finding genuinely encrypted entries.
   SdByteSource credSource(kCredentialPath);
   Credential credential;
   const bool haveCredential = credSource.open() && parseCredential(credSource, &credential);
@@ -121,7 +125,7 @@ std::unique_ptr<ContentDecryptor> openProtectedBook(const std::string& epubPath,
       }
     }
   }
-  if (!book->open(source, crypto(), credential, rightsOverride)) {
+  if (!book->openFromScan(source, crypto(), credential, std::move(scan), rightsOverride)) {
     err = haveCredential ? ("cannot open protected content: " + book->lastError())
                          : "no content access key on this device";
     return nullptr;
