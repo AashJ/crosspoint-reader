@@ -1780,6 +1780,10 @@ void CrossPointWebServer::handleRelay() {
 
   freeink::SecureHttpClient http;
   http.setUserAgent("CrossPoint");
+  // The SecureNet transport ships no CA bundle, so peer verification always
+  // fails (wolfSSL -188); skip it like HttpDownloader does.
+
+  http.setInsecure();
   if (!http.begin(url)) {
     server->send(502, "application/json", "{\"error\":\"begin failed\"}");
     return;
@@ -2019,6 +2023,10 @@ void CrossPointWebServer::handleFetch() {
 
   freeink::SecureHttpClient http;
   http.setUserAgent("CrossPoint");
+  // The SecureNet transport ships no CA bundle, so peer verification always
+  // fails (wolfSSL -188); skip it like HttpDownloader does. Traffic stays
+  // TLS-encrypted, just unauthenticated — matching the prior library-lending flow.
+  http.setInsecure();
   if (!http.begin(url)) {
     file.close();
     Storage.remove(dest.c_str());
