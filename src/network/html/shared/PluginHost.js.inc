@@ -9,7 +9,11 @@
       const r = await fetch(path, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
       });
-      if (!r.ok) throw new Error(path + ' ' + r.status);
+      if (!r.ok) {
+        let detail = '';
+        try { detail = (await r.json()).error || ''; } catch (e) {}
+        throw new Error(path + ' ' + r.status + (detail ? ': ' + detail : ''));
+      }
       return r.json();
     },
     // Device capabilities a page can't do itself. relay() resolves to
@@ -34,7 +38,24 @@
       return Object.keys(jar).map((k) => k + '=' + jar[k]).join('; ');
     },
     crypto(op, fields) { return this._post('/api/crypto', Object.assign({ op }, fields || {})); },
-    writeFile(plugin, path, dataB64) { return this._post('/api/plugin-fs', { plugin, path, data: dataB64 }); },
+    async writeFile(plugin, path, dataB64) {
+      const binary = atob(dataB64 || '');
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const url = '/api/plugin-fs?plugin=' + encodeURIComponent(plugin) +
+        '&path=' + encodeURIComponent(path);
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: bytes
+      });
+      if (!r.ok) {
+        let detail = '';
+        try { detail = (await r.json()).error || ''; } catch (e) {}
+        throw new Error('/api/plugin-fs ' + r.status + (detail ? ': ' + detail : ''));
+      }
+      return r.json();
+    },
     fetchToSd(plugin, url, dest, headers) {
       return this._post('/api/fetch', { plugin, url, dest, headers: headers || {} });
     }

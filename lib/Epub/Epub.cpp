@@ -361,11 +361,9 @@ void Epub::parseCssFiles() const {
 bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   LOG_DBG("EBP", "Loading ePub: %s", filepath.c_str());
 
-  // Protected content (optional): for unprotected content — or a device without
-  // the content key — this returns null and the book reads normally. For
-  // protected content it returns an accessor we route protected item reads
-  // through; content stays encrypted on disk. A hard error (no key, expired)
-  // refuses the open with a user-presentable reason.
+  // Open the optional encrypted-entry accessor. A null result without an error
+  // means normal ZIP reads should be used. A hard error refuses the open with
+  // a user-presentable reason.
   {
     std::string err;
     decryptor = freeink::content::openProtectedBook(filepath, err);
@@ -778,7 +776,7 @@ uint8_t* Epub::readItemContentsToBytes(const std::string& itemHref, size_t* size
 
   const std::string path = FsHelpers::normalisePath(itemHref);
 
-  // Protected content: read protected items on demand (in memory only).
+  // Decode encrypted entries on demand in memory.
   if (decryptor && decryptor->isEncrypted(path)) {
     std::vector<uint8_t> plain;
     if (!decryptor->decrypt(path, plain)) {
@@ -813,8 +811,7 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
 
   const std::string path = FsHelpers::normalisePath(itemHref);
 
-  // Protected content: read whole-entry into memory, then write to the stream
-  // (chapters are small; images/fonts are typically not protected).
+  // Decode the whole entry in memory before writing it to the stream.
   if (decryptor && decryptor->isEncrypted(path)) {
     std::vector<uint8_t> plain;
     if (!decryptor->decrypt(path, plain)) {

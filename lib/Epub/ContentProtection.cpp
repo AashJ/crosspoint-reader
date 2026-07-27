@@ -118,8 +118,8 @@ std::unique_ptr<ContentDecryptor> openProtectedBook(const std::string& epubPath,
                          : "no content access key on this device";
     return nullptr;
   }
-  // encryption.xml was present but lists no protected content (e.g. font
-  // obfuscation) — not a protected book; let the reader open it normally.
+  // An encryption manifest containing only font obfuscation does not require
+  // this read path; let the reader open it normally.
   if (!book->isProtected()) return nullptr;
 
   const int64_t now = static_cast<int64_t>(time(nullptr));

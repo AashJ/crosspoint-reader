@@ -30,11 +30,10 @@ class Epub {
   std::unique_ptr<CssParser> cssParser;
   // CSS files
   std::vector<std::string> cssFiles;
-  // Protected-content read path: set in load() when the content is protected
-  // and this device holds the content key. Protected items are read into memory
-  // only — content stays encrypted at rest. Null for unprotected content.
+  // Optional encrypted-entry accessor. Entries are decoded in memory and stay
+  // encrypted at rest. Null when the accessor is not needed or unavailable.
   std::unique_ptr<freeink::content::ContentDecryptor> decryptor;
-  // User-presentable reason load() refused protected content (empty otherwise).
+  // User-presentable reason the encrypted-entry accessor could not be opened.
   std::string protectionError;
 
   bool findContentOpfFile(std::string* contentOpfFile) const;
@@ -56,7 +55,7 @@ class Epub {
   void setupCacheDir() const;
   const std::string& getCachePath() const;
   const std::string& getPath() const;
-  // User-presentable reason protected content refused to open (empty otherwise).
+  // Empty unless the encrypted-entry accessor failed to open.
   const std::string& getProtectionError() const { return protectionError; }
   bool isProtected() const { return decryptor != nullptr; }
   const std::string& getTitle() const;
