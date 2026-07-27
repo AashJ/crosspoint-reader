@@ -605,9 +605,13 @@ bool Epub::generateCoverBmp(bool cropped) const {
     if (!Storage.openFileForWrite("EBP", coverJpgTempPath, coverJpg)) {
       return false;
     }
-    readItemContentsToStream(coverImageHref, coverJpg, 1024);
+    const bool extracted = readItemContentsToStream(coverImageHref, coverJpg, 1024);
     // Explicitly close() file before reopening for reading
     coverJpg.close();
+    if (!extracted) {
+      Storage.remove(coverJpgTempPath.c_str());
+      return false;
+    }
 
     if (!Storage.openFileForRead("EBP", coverJpgTempPath, coverJpg)) {
       return false;
@@ -639,9 +643,13 @@ bool Epub::generateCoverBmp(bool cropped) const {
     if (!Storage.openFileForWrite("EBP", coverPngTempPath, coverPng)) {
       return false;
     }
-    readItemContentsToStream(coverImageHref, coverPng, 1024);
+    const bool extracted = readItemContentsToStream(coverImageHref, coverPng, 1024);
     // Explicitly close() file before reopening for reading
     coverPng.close();
+    if (!extracted) {
+      Storage.remove(coverPngTempPath.c_str());
+      return false;
+    }
 
     if (!Storage.openFileForRead("EBP", coverPngTempPath, coverPng)) {
       return false;
@@ -694,9 +702,13 @@ bool Epub::generateThumbBmp(int height) const {
     if (!Storage.openFileForWrite("EBP", coverJpgTempPath, coverJpg)) {
       return false;
     }
-    readItemContentsToStream(coverImageHref, coverJpg, 1024);
+    const bool extracted = readItemContentsToStream(coverImageHref, coverJpg, 1024);
     // Explicitly close() file before reopening for reading
     coverJpg.close();
+    if (!extracted) {
+      Storage.remove(coverJpgTempPath.c_str());
+      return false;
+    }
 
     if (!Storage.openFileForRead("EBP", coverJpgTempPath, coverJpg)) {
       return false;
@@ -731,9 +743,13 @@ bool Epub::generateThumbBmp(int height) const {
     if (!Storage.openFileForWrite("EBP", coverPngTempPath, coverPng)) {
       return false;
     }
-    readItemContentsToStream(coverImageHref, coverPng, 1024);
+    const bool extracted = readItemContentsToStream(coverImageHref, coverPng, 1024);
     // Explicitly close() file before reopening for reading
     coverPng.close();
+    if (!extracted) {
+      Storage.remove(coverPngTempPath.c_str());
+      return false;
+    }
 
     if (!Storage.openFileForRead("EBP", coverPngTempPath, coverPng)) {
       return false;
@@ -778,18 +794,34 @@ uint8_t* Epub::readItemContentsToBytes(const std::string& itemHref, size_t* size
 
   // Decode encrypted entries on demand in memory.
   if (decryptor && decryptor->isEncrypted(path)) {
-    std::vector<uint8_t> plain;
-    if (!decryptor->decrypt(path, plain)) {
+    const size_t plainSize = decryptor->decryptedSize(path);
+    if (plainSize > SIZE_MAX - (trailingNullByte ? 1 : 0)) return nullptr;
+    const size_t total = plainSize + (trailingNullByte ? 1 : 0);
+    uint8_t* content = static_cast<uint8_t*>(malloc(total > 0 ? total : 1));
+    if (!content) {
+      LOG_ERR("EBP", "insufficient memory for %s (%u bytes)", path.c_str(),
+              static_cast<unsigned>(total));
+      return nullptr;
+    }
+    struct BufferSink {
+      uint8_t* data;
+      size_t capacity;
+      size_t written;
+    } state{content, plainSize, 0};
+    auto append = [](void* context, const uint8_t* data, size_t size) {
+      auto* target = static_cast<BufferSink*>(context);
+      if (size > target->capacity - target->written) return false;
+      memcpy(target->data + target->written, data, size);
+      target->written += size;
+      return true;
+    };
+    if (!decryptor->decryptToSink(path, append, &state) || state.written != plainSize) {
+      free(content);
       LOG_ERR("EBP", "content read failed for %s", path.c_str());
       return nullptr;
     }
-    // Caller owns the returned buffer (malloc'd like ZipFile's result).
-    const size_t total = plain.size() + (trailingNullByte ? 1 : 0);
-    uint8_t* content = static_cast<uint8_t*>(malloc(total));
-    if (!content) return nullptr;
-    memcpy(content, plain.data(), plain.size());
-    if (trailingNullByte) content[plain.size()] = 0;
-    if (size) *size = plain.size();
+    if (trailingNullByte) content[plainSize] = 0;
+    if (size) *size = plainSize;
     return content;
   }
 
@@ -811,14 +843,19 @@ bool Epub::readItemContentsToStream(const std::string& itemHref, Print& out, con
 
   const std::string path = FsHelpers::normalisePath(itemHref);
 
-  // Decode the whole entry in memory before writing it to the stream.
   if (decryptor && decryptor->isEncrypted(path)) {
-    std::vector<uint8_t> plain;
-    if (!decryptor->decrypt(path, plain)) {
+    struct PrintSink {
+      Print* output;
+    } state{&out};
+    auto append = [](void* context, const uint8_t* data, size_t size) {
+      auto* target = static_cast<PrintSink*>(context);
+      return target->output->write(data, size) == size;
+    };
+    if (!decryptor->decryptToSink(path, append, &state)) {
       LOG_ERR("EBP", "content read failed for %s", path.c_str());
       return false;
     }
-    return plain.empty() || out.write(plain.data(), plain.size()) == plain.size();
+    return true;
   }
 
   return ZipFile(filepath).readFileToStream(path.c_str(), out, chunkSize, allowEarlyStop);

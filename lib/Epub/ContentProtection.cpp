@@ -64,6 +64,17 @@ class ProtectedBookDecryptor : public ContentDecryptor {
     return book_->decryptEntry(source, crypto(), itemPath, &out);
   }
 
+  size_t decryptedSize(const std::string& itemPath) const override {
+    return book_->decryptedSize(itemPath);
+  }
+
+  bool decryptToSink(const std::string& itemPath, ContentChunkSink sink,
+                     void* context) override {
+    SdByteSource source(epubPath_);
+    if (!source.open()) return false;
+    return book_->decryptEntryToSink(source, crypto(), itemPath, sink, context);
+  }
+
  private:
   std::string epubPath_;
   std::unique_ptr<ProtectedBook> book_;
