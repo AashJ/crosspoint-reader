@@ -13,7 +13,6 @@
 #include <Memory.h>
 #include <ProtectedBook.h>
 #include <WolfsslCrypto.h>
-#include <Zip.h>
 #include <time.h>
 
 namespace freeink {
@@ -89,14 +88,12 @@ std::unique_ptr<ContentDecryptor> openProtectedBook(const std::string& epubPath,
   SdByteSource source(epubPath);
   if (!source.open()) return nullptr;
 
-  // Cheap protection sniff: encryption.xml present? Plain EPUBs return here.
-  ZipScan probe;
-  if (!probe.open(source) || !probe.find("META-INF/encryption.xml")) return nullptr;
-
-  // Credential is optional at this point: a book carrying encryption.xml may
-  // only obfuscate its embedded fonts (not content-protected) and need no
-  // credential. Load it if present; demand it only once we know the content is
-  // actually encrypted.
+  // ProtectedBook performs the single authoritative ZIP scan. It returns with
+  // isProtected() false for both plain EPUBs and font-obfuscation-only EPUBs,
+  // without attempting key unwrap or content decryption.
+  //
+  // The credential is optional: ProtectedBook only consults it after its
+  // encryption manifest identifies genuinely protected content.
   SdByteSource credSource(kCredentialPath);
   Credential credential;
   const bool haveCredential = credSource.open() && parseCredential(credSource, &credential);
