@@ -2043,54 +2043,94 @@ void CrossPointWebServer::handleFetch() {
     return;
   }
 
-  freeink::SecureHttpClient http;
-  http.setUserAgent("CrossPoint");
-  // The SecureNet transport ships no CA bundle, so peer verification always
-  // fails (wolfSSL -188); skip it like HttpDownloader does. Traffic stays
-  // TLS-encrypted, just unauthenticated — matching the prior library-lending flow.
-  http.setInsecure();
-  // Fulfillment servers assemble books on the fly and can stall mid-body while
-  // packaging; the default 15s no-data timeout truncates those downloads.
-  http.setTimeout(60000);
-  if (!http.begin(url)) {
-    file.close();
-    Storage.remove(dest.c_str());
-    server->send(502, "application/json", "{\"error\":\"begin failed\"}");
-    return;
-  }
-  if (req["headers"].is<JsonObject>()) {
-    for (JsonPair kv : req["headers"].as<JsonObject>()) {
-      const char* v = kv.value().as<const char*>();
-      http.addHeader(kv.key().c_str(), v ? v : "");
-    }
-  }
+  // A 2xx only means the headers arrived; the body can still be cut short by a
+  // transport drop, a server stall, or a wolfSSL mid-record OOM (measured: at
+  // ~20KB free heap the 16KB-record receive buffer fails to allocate). Instead
+  // of abandoning the download, resume from the received byte count with a
+  // Range request on a fresh connection — fulfillment CDNs serve static files
+  // and honor ranges. A server that ignores the Range (200 instead of 206)
+  // restarts the body, so the file is rewound before its first chunk lands.
+  static constexpr int FETCH_MAX_ATTEMPTS = 4;
   size_t written = 0;
+  size_t totalExpected = 0;
   size_t nextHeapLog = 0;
   bool sdFull = false;
-  const int status = http.GET([&](const uint8_t* data, size_t len) {
-    resetTaskWatchdogIfSubscribed();
-    if (file.write(data, len) != len) {
-      sdFull = true;
-      return false;
+  bool complete = false;
+  int status = 0;
+  for (int attempt = 0; attempt < FETCH_MAX_ATTEMPTS; ++attempt) {
+    freeink::SecureHttpClient http;
+    http.setUserAgent("CrossPoint");
+    // The SecureNet transport ships no CA bundle, so peer verification always
+    // fails (wolfSSL -188); skip it like HttpDownloader does. Traffic stays
+    // TLS-encrypted, just unauthenticated — matching the prior library-lending flow.
+    http.setInsecure();
+    // Fulfillment servers assemble books on the fly and can stall mid-body
+    // while packaging; the default 15s no-data timeout truncates those downloads.
+    http.setTimeout(60000);
+    if (!http.begin(url)) {
+      status = -1;
+      break;
     }
-    written += len;
-    // Heap trajectory during the transfer: a steady value rules RAM out of a
-    // mid-body failure; a falling one implicates it.
-    if (written >= nextHeapLog) {
-      LOG_DBG("WEB", "Fetch %u bytes, heap %u", (unsigned)written, (unsigned)ESP.getFreeHeap());
-      nextHeapLog = written + 64 * 1024;
+    if (req["headers"].is<JsonObject>()) {
+      for (JsonPair kv : req["headers"].as<JsonObject>()) {
+        const char* v = kv.value().as<const char*>();
+        http.addHeader(kv.key().c_str(), v ? v : "");
+      }
     }
-    return true;
-  });
+    const bool resuming = written > 0;
+    if (resuming) {
+      char range[48];
+      snprintf(range, sizeof(range), "bytes=%u-", (unsigned)written);
+      http.addHeader("Range", range);
+      LOG_INF("WEB", "Fetch attempt %d resuming from byte %u", attempt + 1, (unsigned)written);
+    }
+    bool rewindFailed = false;
+    bool firstChunk = true;
+    size_t attemptStart = written;
+    status = http.GET([&](const uint8_t* data, size_t len) {
+      resetTaskWatchdogIfSubscribed();
+      if (firstChunk) {
+        firstChunk = false;
+        // Range ignored: this body restarts from byte 0, so the file must too.
+        if (resuming && http.getStatus() == 200) {
+          file.close();
+          if (!Storage.openFileForWrite("PLG", dest, file)) {
+            rewindFailed = true;
+            return false;
+          }
+          written = 0;
+          attemptStart = 0;
+        }
+      }
+      if (file.write(data, len) != len) {
+        sdFull = true;
+        return false;
+      }
+      written += len;
+      // Heap trajectory during the transfer: a steady value rules RAM out of a
+      // mid-body failure; a falling one implicates it.
+      if (written >= nextHeapLog) {
+        LOG_DBG("WEB", "Fetch %u bytes, heap %u", (unsigned)written, (unsigned)ESP.getFreeHeap());
+        nextHeapLog = written + 64 * 1024;
+      }
+      return true;
+    });
+    if (sdFull || rewindFailed) break;
+    if (status < 200 || status >= 300) break;  // http-level failure: resume cannot help
+    // A 206's Content-Length covers only the remainder, so anchor at the
+    // attempt's starting offset to get the whole-file size.
+    if (totalExpected == 0 && http.hasContentLength()) totalExpected = attemptStart + http.getContentLength();
+    if (http.responseComplete()) {
+      complete = true;
+      break;
+    }
+    LOG_ERR("WEB", "Fetch truncated: %u of %u bytes (heap %u, attempt %d): %s", (unsigned)written,
+            (unsigned)totalExpected, (unsigned)ESP.getFreeHeap(), attempt + 1, url.c_str());
+  }
   file.flush();
   file.close();
 
-  // A 2xx only means the headers arrived; the body can still be cut short by a
-  // transport drop or timeout. A partial book on SD looks like success to the
-  // caller, so detect it, delete the file, and report an explicit error.
-  if (status >= 200 && status < 300 && !http.responseComplete()) {
-    LOG_ERR("WEB", "Fetch truncated: %u of %u bytes (heap %u): %s", (unsigned)written,
-            http.hasContentLength() ? (unsigned)http.getContentLength() : 0, (unsigned)ESP.getFreeHeap(), url.c_str());
+  if (!complete && status >= 200 && status < 300) {
     Storage.remove(dest.c_str());
     char msg[96];
     snprintf(msg, sizeof(msg), "{\"error\":\"%s\",\"bytes\":%u}", sdFull ? "sd write failed" : "download truncated",
@@ -2102,7 +2142,7 @@ void CrossPointWebServer::handleFetch() {
   JsonDocument resp;
   if (status < 200 || status >= 300) {
     Storage.remove(dest.c_str());
-    resp["error"] = "http status";
+    resp["error"] = status < 0 ? "transport failure" : "http status";
   }
   resp["status"] = status;
   resp["bytes"] = written;
