@@ -2049,6 +2049,9 @@ void CrossPointWebServer::handleFetch() {
   // fails (wolfSSL -188); skip it like HttpDownloader does. Traffic stays
   // TLS-encrypted, just unauthenticated — matching the prior library-lending flow.
   http.setInsecure();
+  // Fulfillment servers assemble books on the fly and can stall mid-body while
+  // packaging; the default 15s no-data timeout truncates those downloads.
+  http.setTimeout(60000);
   if (!http.begin(url)) {
     file.close();
     Storage.remove(dest.c_str());
