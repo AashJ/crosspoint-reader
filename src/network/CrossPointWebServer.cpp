@@ -1790,6 +1790,14 @@ void CrossPointWebServer::handleRelay() {
     server->send(502, "application/json", "{\"error\":\"transport failure\"}");
     return;
   }
+  // Same truncation trap as /api/fetch: a 2xx with an incomplete body would
+  // hand the plugin a silently cut-short payload.
+  if (status >= 200 && status < 300 && !http.responseComplete()) {
+    LOG_ERR("WEB", "Relay truncated: %u bytes (heap %u): %s", (unsigned)respBody.size(), (unsigned)ESP.getFreeHeap(),
+            url.c_str());
+    server->send(502, "application/json", "{\"error\":\"response truncated\"}");
+    return;
+  }
 
   JsonDocument resp;
   resp["status"] = status;
@@ -2054,14 +2062,39 @@ void CrossPointWebServer::handleFetch() {
     }
   }
   size_t written = 0;
+  size_t nextHeapLog = 0;
+  bool sdFull = false;
   const int status = http.GET([&](const uint8_t* data, size_t len) {
     resetTaskWatchdogIfSubscribed();
-    if (file.write(data, len) != len) return false;
+    if (file.write(data, len) != len) {
+      sdFull = true;
+      return false;
+    }
     written += len;
+    // Heap trajectory during the transfer: a steady value rules RAM out of a
+    // mid-body failure; a falling one implicates it.
+    if (written >= nextHeapLog) {
+      LOG_DBG("WEB", "Fetch %u bytes, heap %u", (unsigned)written, (unsigned)ESP.getFreeHeap());
+      nextHeapLog = written + 64 * 1024;
+    }
     return true;
   });
   file.flush();
   file.close();
+
+  // A 2xx only means the headers arrived; the body can still be cut short by a
+  // transport drop or timeout. A partial book on SD looks like success to the
+  // caller, so detect it, delete the file, and report an explicit error.
+  if (status >= 200 && status < 300 && !http.responseComplete()) {
+    LOG_ERR("WEB", "Fetch truncated: %u of %u bytes (heap %u): %s", (unsigned)written,
+            http.hasContentLength() ? (unsigned)http.getContentLength() : 0, (unsigned)ESP.getFreeHeap(), url.c_str());
+    Storage.remove(dest.c_str());
+    char msg[96];
+    snprintf(msg, sizeof(msg), "{\"error\":\"%s\",\"bytes\":%u}", sdFull ? "sd write failed" : "download truncated",
+             (unsigned)written);
+    server->send(502, "application/json", msg);
+    return;
+  }
 
   JsonDocument resp;
   if (status < 200 || status >= 300) {
