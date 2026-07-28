@@ -1753,6 +1753,14 @@ void CrossPointWebServer::handleRelay() {
     }
   }
   const std::string body = req["body"] | "";
+  // This task is subscribed to the task WDT for the whole web-server session;
+  // a slow peer (account sign-in measured >5s) would otherwise fire it while we
+  // block on the response. SecureHttpClient polls shouldAbort in every wait
+  // loop, so feed the watchdog there.
+  const auto feedWatchdog = [this]() {
+    resetTaskWatchdogIfSubscribed();
+    return false;  // never aborts; only feeds
+  };
   // The response passes through RAM three times below (accumulate, JsonDocument
   // copy, serialized String), so it is hard-capped. Large payloads must go
   // through /api/fetch, which streams to SD without buffering. An uncapped
@@ -1762,24 +1770,26 @@ void CrossPointWebServer::handleRelay() {
   std::string respBody;
   bool tooLarge = false;
   bool sized = false;
-  const int status = http.sendRequest(method.c_str(), reinterpret_cast<const uint8_t*>(body.data()), body.size(),
-                                      [&](const uint8_t* data, size_t len) {
-                                        if (!sized) {
-                                          sized = true;
-                                          // Known-oversized: refuse before buffering a single chunk.
-                                          if (http.hasContentLength() && http.getContentLength() > RELAY_BODY_LIMIT) {
-                                            tooLarge = true;
-                                            return false;
-                                          }
-                                          if (http.hasContentLength()) respBody.reserve(http.getContentLength());
-                                        }
-                                        if (respBody.size() + len > RELAY_BODY_LIMIT) {
-                                          tooLarge = true;
-                                          return false;
-                                        }
-                                        respBody.append(reinterpret_cast<const char*>(data), len);
-                                        return true;
-                                      });
+  const int status = http.sendRequest(
+      method.c_str(), reinterpret_cast<const uint8_t*>(body.data()), body.size(),
+      [&](const uint8_t* data, size_t len) {
+        if (!sized) {
+          sized = true;
+          // Known-oversized: refuse before buffering a single chunk.
+          if (http.hasContentLength() && http.getContentLength() > RELAY_BODY_LIMIT) {
+            tooLarge = true;
+            return false;
+          }
+          if (http.hasContentLength()) respBody.reserve(http.getContentLength());
+        }
+        if (respBody.size() + len > RELAY_BODY_LIMIT) {
+          tooLarge = true;
+          return false;
+        }
+        respBody.append(reinterpret_cast<const char*>(data), len);
+        return true;
+      },
+      feedWatchdog);
   if (tooLarge) {
     LOG_ERR("WEB", "Relay response exceeds %u byte cap (url=%s); plugin should use /api/fetch",
             (unsigned)RELAY_BODY_LIMIT, url.c_str());
@@ -2094,34 +2104,42 @@ void CrossPointWebServer::handleFetch() {
     bool rewindFailed = false;
     bool firstChunk = true;
     size_t attemptStart = written;
-    status = http.GET([&](const uint8_t* data, size_t len) {
-      resetTaskWatchdogIfSubscribed();
-      if (firstChunk) {
-        firstChunk = false;
-        // Range ignored: this body restarts from byte 0, so the file must too.
-        if (resuming && http.getStatus() == 200) {
-          file.close();
-          if (!Storage.openFileForWrite("PLG", dest, file)) {
-            rewindFailed = true;
+    status = http.GET(
+        [&](const uint8_t* data, size_t len) {
+          resetTaskWatchdogIfSubscribed();
+          if (firstChunk) {
+            firstChunk = false;
+            // Range ignored: this body restarts from byte 0, so the file must too.
+            if (resuming && http.getStatus() == 200) {
+              file.close();
+              if (!Storage.openFileForWrite("PLG", dest, file)) {
+                rewindFailed = true;
+                return false;
+              }
+              written = 0;
+              attemptStart = 0;
+            }
+          }
+          if (file.write(data, len) != len) {
+            sdFull = true;
             return false;
           }
-          written = 0;
-          attemptStart = 0;
-        }
-      }
-      if (file.write(data, len) != len) {
-        sdFull = true;
-        return false;
-      }
-      written += len;
-      // Heap trajectory during the transfer: a steady value rules RAM out of a
-      // mid-body failure; a falling one implicates it.
-      if (written >= nextHeapLog) {
-        LOG_DBG("WEB", "Fetch %u bytes, heap %u", (unsigned)written, (unsigned)ESP.getFreeHeap());
-        nextHeapLog = written + 64 * 1024;
-      }
-      return true;
-    });
+          written += len;
+          // Heap trajectory during the transfer: a steady value rules RAM out of a
+          // mid-body failure; a falling one implicates it.
+          if (written >= nextHeapLog) {
+            LOG_DBG("WEB", "Fetch %u bytes, heap %u", (unsigned)written, (unsigned)ESP.getFreeHeap());
+            nextHeapLog = written + 64 * 1024;
+          }
+          return true;
+        },
+        // The data callback only runs when bytes arrive; with the 60s
+        // no-data timeout a server stall would starve this task's WDT
+        // subscription. shouldAbort is polled in every wait loop.
+        [this]() {
+          resetTaskWatchdogIfSubscribed();
+          return false;  // never aborts; only feeds
+        });
     if (sdFull || rewindFailed) break;
     if (status < 200 || status >= 300) break;  // http-level failure: resume cannot help
     // A 206's Content-Length covers only the remainder, so anchor at the
