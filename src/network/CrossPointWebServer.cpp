@@ -2050,14 +2050,21 @@ void CrossPointWebServer::handleFetch() {
   // Range request on a fresh connection — fulfillment CDNs serve static files
   // and honor ranges. A server that ignores the Range (200 instead of 206)
   // restarts the body, so the file is rewound before its first chunk lands.
-  static constexpr int FETCH_MAX_ATTEMPTS = 4;
+  // Truncations cluster in the first ~100KB while heap is still settling from
+  // the auth relays, then a connection can run for megabytes (measured: three
+  // truncated attempts, then 7MB on the fourth). Since a resume keeps all
+  // prior progress, only consecutive zero-progress attempts count against the
+  // cap; the absolute ceiling is just a backstop against a dead server.
+  static constexpr int FETCH_MAX_STALLED_ATTEMPTS = 3;
+  static constexpr int FETCH_MAX_TOTAL_ATTEMPTS = 20;
   size_t written = 0;
   size_t totalExpected = 0;
   size_t nextHeapLog = 0;
   bool sdFull = false;
   bool complete = false;
   int status = 0;
-  for (int attempt = 0; attempt < FETCH_MAX_ATTEMPTS; ++attempt) {
+  int stalled = 0;
+  for (int attempt = 0; attempt < FETCH_MAX_TOTAL_ATTEMPTS && stalled < FETCH_MAX_STALLED_ATTEMPTS; ++attempt) {
     freeink::SecureHttpClient http;
     http.setUserAgent("CrossPoint");
     // The SecureNet transport ships no CA bundle, so peer verification always
@@ -2126,6 +2133,7 @@ void CrossPointWebServer::handleFetch() {
     }
     LOG_ERR("WEB", "Fetch truncated: %u of %u bytes (heap %u, attempt %d): %s", (unsigned)written,
             (unsigned)totalExpected, (unsigned)ESP.getFreeHeap(), attempt + 1, url.c_str());
+    stalled = written > attemptStart ? 0 : stalled + 1;
   }
   file.flush();
   file.close();
