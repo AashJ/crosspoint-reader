@@ -154,4 +154,11 @@ class CrossPointWebServer {
   void handleCrypto();            // POST /api/crypto    -> generic crypto primitive (base64 I/O)
   void handleFetch();             // POST /api/fetch     -> device downloads a URL to SD
   void handlePluginFs();          // POST /api/plugin-fs -> plugin writes a small file to SD
+
+  // A fetch blocks the serving task for its whole duration, so the WebSocket
+  // server and discovery UDP cannot answer anyone until it finishes; their
+  // buffers are worth more as TLS headroom (4.4KB heap floor measured with
+  // them resident during a large transfer).
+  void suspendTransferServices();
+  void resumeTransferServices();
 };

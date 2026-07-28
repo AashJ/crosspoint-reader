@@ -6,6 +6,7 @@
 #include <HalGPIO.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <Memory.h>
 #include <SecureHttpClient.h>
 #include <Util.h>
 #include <WiFi.h>
@@ -234,6 +235,33 @@ void CrossPointWebServer::begin() {
   LOG_DBG("WEB", "Access at http://%s/", ipAddr.c_str());
   LOG_DBG("WEB", "WebSocket at ws://%s:%d/", ipAddr.c_str(), wsPort);
   LOG_DBG("WEB", "[MEM] Free heap after server.begin(): %d bytes", ESP.getFreeHeap());
+}
+
+void CrossPointWebServer::suspendTransferServices() {
+  // Leave the WebSocket server alone mid-upload; killing it would abort the
+  // transfer. The fetch just stalls that upload until it completes.
+  if (wsServer && !wsUploadInProgress) {
+    wsServer->close();
+    wsServer.reset();
+  }
+  if (udpActive) udp.stop();
+  LOG_DBG("WEB", "Transfer services suspended, heap %u", (unsigned)ESP.getFreeHeap());
+}
+
+void CrossPointWebServer::resumeTransferServices() {
+  if (!running) return;
+  if (!wsServer) {
+    auto* ws = new (std::nothrow) WebSocketsServer(wsPort);
+    if (ws) {
+      wsServer.reset(ws);
+      wsServer->begin();
+      wsServer->onEvent(wsEventCallback);
+    } else {
+      LOG_ERR("WEB", "OOM: WebSocket server restart");
+    }
+  }
+  if (udpActive) udpActive = udp.begin(LOCAL_UDP_PORT);
+  LOG_DBG("WEB", "Transfer services resumed, heap %u", (unsigned)ESP.getFreeHeap());
 }
 
 void CrossPointWebServer::abortWsUpload(const char* tag) {
@@ -2060,6 +2088,9 @@ void CrossPointWebServer::handleFetch() {
   // Range request on a fresh connection — fulfillment CDNs serve static files
   // and honor ranges. A server that ignores the Range (200 instead of 206)
   // restarts the body, so the file is rewound before its first chunk lands.
+  suspendTransferServices();
+  ScopedCleanup resumeServices{[this] { resumeTransferServices(); }};
+
   // Truncations cluster in the first ~100KB while heap is still settling from
   // the auth relays, then a connection can run for megabytes (measured: three
   // truncated attempts, then 7MB on the fourth). Since a resume keeps all
