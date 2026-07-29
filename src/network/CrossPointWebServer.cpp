@@ -34,6 +34,33 @@
 #include "util/TaskWatchdog.h"
 
 namespace {
+// Arduino's WebServer retains parsed request arguments until the next request.
+// For JSON POSTs, that includes the complete "plain" body. Expose a narrowly
+// scoped release operation so large request bodies do not remain resident
+// between requests, and so outbound TLS can reuse that memory immediately.
+class CrossPointHttpServer final : public WebServer {
+ public:
+  explicit CrossPointHttpServer(uint16_t port) : WebServer(port) {}
+
+  void releaseRequestArguments() {
+    if (_currentArgs) {
+      delete[] _currentArgs;
+      _currentArgs = nullptr;
+    }
+    _currentArgCount = 0;
+
+    if (_postArgs) {
+      delete[] _postArgs;
+      _postArgs = nullptr;
+    }
+    _postArgsLen = 0;
+  }
+};
+
+void releaseRequestArguments(WebServer* server) {
+  static_cast<CrossPointHttpServer*>(server)->releaseRequestArguments();
+}
+
 // Folders/files to hide from the web interface file browser
 // Note: Items starting with "." are automatically hidden
 constexpr const char* HIDDEN_ITEMS[] = {"System Volume Information", "XTCache"};
@@ -119,7 +146,7 @@ void CrossPointWebServer::begin() {
   LOG_DBG("WEB", "Network mode: %s", apMode ? "AP" : "STA");
 
   LOG_DBG("WEB", "Creating web server on port %d...", port);
-  server.reset(new WebServer(port));
+  server.reset(new CrossPointHttpServer(port));
 
   // Disable WiFi sleep to improve responsiveness and prevent 'unreachable' errors.
   // This is critical for reliable web server operation on ESP32.
@@ -245,7 +272,8 @@ void CrossPointWebServer::suspendTransferServices() {
     wsServer.reset();
   }
   if (udpActive) udp.stop();
-  LOG_DBG("WEB", "Transfer services suspended, heap %u", (unsigned)ESP.getFreeHeap());
+  LOG_DBG("WEB", "Transfer services suspended, heap %u, max block %u", (unsigned)ESP.getFreeHeap(),
+          (unsigned)ESP.getMaxAllocHeap());
 }
 
 void CrossPointWebServer::resumeTransferServices() {
@@ -261,7 +289,8 @@ void CrossPointWebServer::resumeTransferServices() {
     }
   }
   if (udpActive) udpActive = udp.begin(LOCAL_UDP_PORT);
-  LOG_DBG("WEB", "Transfer services resumed, heap %u", (unsigned)ESP.getFreeHeap());
+  LOG_DBG("WEB", "Transfer services resumed, heap %u, max block %u", (unsigned)ESP.getFreeHeap(),
+          (unsigned)ESP.getMaxAllocHeap());
 }
 
 bool CrossPointWebServer::pauseWebTaskWatchdog() {
@@ -381,6 +410,10 @@ void CrossPointWebServer::handleClient() {
   }
 
   server->handleClient();
+  // WebServer otherwise keeps the last request's argument strings allocated
+  // until another request arrives. They are no longer observable once its
+  // handler returns, so release them now instead of retaining a JSON body.
+  releaseRequestArguments(server.get());
 
   // Handle WebSocket events
   if (wsServer) {
@@ -1794,6 +1827,11 @@ void CrossPointWebServer::handleRelay() {
   // bounded timeouts, so pause the task watchdog until the client is destroyed.
   const bool restoreWatchdog = pauseWebTaskWatchdog();
   ScopedCleanup restoreWatchdogOnExit{[this, restoreWatchdog] { restoreWebTaskWatchdog(restoreWatchdog); }};
+
+  // Declare the resume guard before the TLS client so reverse destruction
+  // releases every client/response allocation before rebuilding these services.
+  suspendTransferServices();
+  ScopedCleanup resumeServices{[this] { resumeTransferServices(); }};
   freeink::SecureHttpClient http;
   http.setUserAgent("CrossPoint");
   // The SecureNet transport ships no CA bundle, so peer verification always
@@ -1811,6 +1849,15 @@ void CrossPointWebServer::handleRelay() {
     }
   }
   const std::string body = req["body"] | "";
+  // All values needed below now have independent storage. Drop both copies of
+  // the inbound JSON before wolfSSL allocates its handshake working set.
+  req.clear();
+  req.shrinkToFit();
+  releaseRequestArguments(server.get());
+
+  LOG_DBG("WEB", "Relay TLS start: heap %u, max block %u: %s", (unsigned)ESP.getFreeHeap(),
+          (unsigned)ESP.getMaxAllocHeap(), url.c_str());
+
   // This task is subscribed to the task WDT for the whole web-server session;
   // a slow peer (account sign-in measured >5s) would otherwise fire it while we
   // block on the response. SecureHttpClient polls shouldAbort in every wait
@@ -1855,6 +1902,8 @@ void CrossPointWebServer::handleRelay() {
     return;
   }
   if (status < 0) {
+    LOG_ERR("WEB", "Relay transport failure: heap %u, max block %u: %s", (unsigned)ESP.getFreeHeap(),
+            (unsigned)ESP.getMaxAllocHeap(), url.c_str());
     server->send(502, "application/json", "{\"error\":\"transport failure\"}");
     return;
   }
@@ -2090,6 +2139,10 @@ void CrossPointWebServer::handleFetch() {
     server->send(400, "application/json", "{\"error\":\"bad url/dest\"}");
     return;
   }
+
+  req.clear();
+  req.shrinkToFit();
+  releaseRequestArguments(server.get());
 
   Storage.remove(dest.c_str());
   HalFile file;
