@@ -2120,7 +2120,8 @@ void CrossPointWebServer::handleCrypto() {
   server->send(200, "application/json", out);
 }
 
-// POST /api/fetch {plugin, url, dest, headers?} -> {status, bytes}
+// POST /api/fetch {plugin, url, dest, headers?, offset?, maxBytes?}
+//   -> {status, bytes, complete, total?}
 // Device downloads a URL straight to SD, so a large body never passes through
 // the browser.
 void CrossPointWebServer::handleFetch() {
@@ -2135,6 +2136,10 @@ void CrossPointWebServer::handleFetch() {
   }
   const std::string url = req["url"] | "";
   const std::string dest = req["dest"] | "";
+  const size_t requestedOffset = req["offset"] | 0;
+  size_t segmentLimit = req["maxBytes"] | 0;
+  static constexpr size_t FETCH_MAX_SEGMENT_SIZE = 4 * 1024 * 1024;
+  if (segmentLimit > FETCH_MAX_SEGMENT_SIZE) segmentLimit = FETCH_MAX_SEGMENT_SIZE;
   if (url.empty() || !safeWritePath(dest)) {
     server->send(400, "application/json", "{\"error\":\"bad url/dest\"}");
     return;
@@ -2151,11 +2156,23 @@ void CrossPointWebServer::handleFetch() {
   req.shrinkToFit();
   releaseRequestArguments(server.get());
 
-  Storage.remove(dest.c_str());
   HalFile file;
-  if (!Storage.openFileForWrite("PLG", dest, file)) {
-    server->send(500, "application/json", "{\"error\":\"cannot create file\"}");
-    return;
+  if (requestedOffset == 0) {
+    Storage.remove(dest.c_str());
+    if (!Storage.openFileForWrite("PLG", dest, file)) {
+      server->send(500, "application/json", "{\"error\":\"cannot create file\"}");
+      return;
+    }
+  } else {
+    file = Storage.open(dest.c_str(), O_RDWR | O_AT_END);
+    const size_t existingSize = file ? file.size() : 0;
+    if (!file || existingSize != requestedOffset) {
+      if (file) file.close();
+      char msg[96];
+      snprintf(msg, sizeof(msg), "{\"error\":\"offset mismatch\",\"bytes\":%u}", (unsigned)existingSize);
+      server->send(409, "application/json", msg);
+      return;
+    }
   }
 
   // A 2xx only means the headers arrived; the body can still be cut short by a
@@ -2177,11 +2194,13 @@ void CrossPointWebServer::handleFetch() {
   // cap; the absolute ceiling is just a backstop against a dead server.
   static constexpr int FETCH_MAX_STALLED_ATTEMPTS = 3;
   static constexpr int FETCH_MAX_TOTAL_ATTEMPTS = 20;
-  size_t written = 0;
+  size_t written = requestedOffset;
   size_t totalExpected = 0;
-  size_t nextHeapLog = 0;
+  size_t nextHeapLog = written;
   bool sdFull = false;
   bool complete = false;
+  bool segmentBoundary = false;
+  bool rangeUnsupported = false;
   int status = 0;
   int stalled = 0;
   const unsigned long fetchStartedAt = millis();
@@ -2249,6 +2268,10 @@ void CrossPointWebServer::handleFetch() {
             firstChunk = false;
             // Range ignored: this body restarts from byte 0, so the file must too.
             if (resuming && http.getStatus() == 200) {
+              if (requestedOffset > 0) {
+                rangeUnsupported = true;
+                return false;
+              }
               file.close();
               if (!Storage.openFileForWrite("PLG", dest, file)) {
                 rewindFailed = true;
@@ -2258,11 +2281,20 @@ void CrossPointWebServer::handleFetch() {
               attemptStart = 0;
             }
           }
-          if (file.write(data, len) != len) {
+          size_t writeLen = len;
+          if (segmentLimit > 0) {
+            const size_t segmentBytes = written - requestedOffset;
+            if (segmentBytes >= segmentLimit) {
+              segmentBoundary = true;
+              return false;
+            }
+            writeLen = std::min(writeLen, segmentLimit - segmentBytes);
+          }
+          if (file.write(data, writeLen) != writeLen) {
             sdFull = true;
             return false;
           }
-          written += len;
+          written += writeLen;
           // Heap trajectory during the transfer: a steady value rules RAM out of a
           // mid-body failure; a falling one implicates it.
           if (written >= nextHeapLog) {
@@ -2270,6 +2302,13 @@ void CrossPointWebServer::handleFetch() {
             nextHeapLog = written + 1024 * 1024;
           }
           keepBrowserAlive();
+          if (writeLen < len || (segmentLimit > 0 && written - requestedOffset >= segmentLimit)) {
+            // The caller requested a bounded segment. Stopping the response
+            // callback closes this upstream socket cleanly; the next browser
+            // request resumes from `written` with Range.
+            segmentBoundary = true;
+            return false;
+          }
           return true;
         },
         // The data callback only runs when bytes arrive; with the 60s
@@ -2280,11 +2319,15 @@ void CrossPointWebServer::handleFetch() {
           keepBrowserAlive();
           return false;  // never aborts; only feeds
         });
-    if (sdFull || rewindFailed) break;
+    if (sdFull || rewindFailed || rangeUnsupported) break;
     if (status < 200 || status >= 300) break;  // http-level failure: resume cannot help
     // A 206's Content-Length covers only the remainder, so anchor at the
     // attempt's starting offset to get the whole-file size.
     if (totalExpected == 0 && http.hasContentLength()) totalExpected = attemptStart + http.getContentLength();
+    if (segmentBoundary) {
+      if (totalExpected > 0 && written >= totalExpected) complete = true;
+      break;
+    }
     if (http.responseComplete()) {
       complete = true;
       break;
@@ -2296,11 +2339,25 @@ void CrossPointWebServer::handleFetch() {
   file.flush();
   file.close();
 
+  if (segmentBoundary && !complete && status >= 200 && status < 300) {
+    JsonDocument resp;
+    resp["status"] = status;
+    resp["bytes"] = written;
+    resp["complete"] = false;
+    if (totalExpected > 0) resp["total"] = totalExpected;
+    String out;
+    serializeJson(resp, out);
+    LOG_INF("WEB", "Fetch segment complete: %u bytes total in %lu ms: %s", (unsigned)written,
+            millis() - fetchStartedAt, url.c_str());
+    sendFetchResult(200, out);
+    return;
+  }
+
   if (!complete && status >= 200 && status < 300) {
     Storage.remove(dest.c_str());
     char msg[96];
-    snprintf(msg, sizeof(msg), "{\"error\":\"%s\",\"bytes\":%u}", sdFull ? "sd write failed" : "download truncated",
-             (unsigned)written);
+    const char* error = sdFull ? "sd write failed" : rangeUnsupported ? "range unsupported" : "download truncated";
+    snprintf(msg, sizeof(msg), "{\"error\":\"%s\",\"bytes\":%u}", error, (unsigned)written);
     LOG_ERR("WEB", "Fetch failed after %u bytes in %lu ms: %s", (unsigned)written, millis() - fetchStartedAt,
             url.c_str());
     sendFetchResult(502, msg);
@@ -2314,6 +2371,8 @@ void CrossPointWebServer::handleFetch() {
   }
   resp["status"] = status;
   resp["bytes"] = written;
+  resp["complete"] = complete;
+  if (totalExpected > 0) resp["total"] = totalExpected;
   String out;
   serializeJson(resp, out);
   const bool browserConnected = server->client().connected();

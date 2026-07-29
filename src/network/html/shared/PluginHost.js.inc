@@ -56,8 +56,22 @@
       }
       return r.json();
     },
-    fetchToSd(plugin, url, dest, headers) {
-      return this._post('/api/fetch', { plugin, url, dest, headers: headers || {} });
+    async fetchToSd(plugin, url, dest, headers) {
+      // Keep each browser-facing request short. Mobile browsers may terminate
+      // a request after a few minutes even when response heartbeats are flowing,
+      // while the device itself is still downloading successfully.
+      const maxBytes = 2 * 1024 * 1024;
+      let offset = 0;
+      for (;;) {
+        const result = await this._post('/api/fetch', {
+          plugin, url, dest, headers: headers || {}, offset, maxBytes
+        });
+        if (result.complete !== false) return result;
+        if (!Number.isFinite(result.bytes) || result.bytes <= offset) {
+          throw new Error('/api/fetch made no progress');
+        }
+        offset = result.bytes;
+      }
     }
   };
 
