@@ -2267,7 +2267,7 @@ void CrossPointWebServer::handleFetch() {
           // mid-body failure; a falling one implicates it.
           if (written >= nextHeapLog) {
             LOG_DBG("WEB", "Fetch %u bytes, heap %u", (unsigned)written, (unsigned)ESP.getFreeHeap());
-            nextHeapLog = written + 64 * 1024;
+            nextHeapLog = written + 1024 * 1024;
           }
           keepBrowserAlive();
           return true;
