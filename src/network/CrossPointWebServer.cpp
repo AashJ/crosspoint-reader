@@ -2140,6 +2140,13 @@ void CrossPointWebServer::handleFetch() {
     return;
   }
 
+  std::vector<std::pair<std::string, std::string>> requestHeaders;
+  if (req["headers"].is<JsonObject>()) {
+    for (JsonPair kv : req["headers"].as<JsonObject>()) {
+      const char* value = kv.value().as<const char*>();
+      requestHeaders.emplace_back(kv.key().c_str(), value ? value : "");
+    }
+  }
   req.clear();
   req.shrinkToFit();
   releaseRequestArguments(server.get());
@@ -2177,6 +2184,37 @@ void CrossPointWebServer::handleFetch() {
   bool complete = false;
   int status = 0;
   int stalled = 0;
+  const unsigned long fetchStartedAt = millis();
+  unsigned long lastBrowserHeartbeat = fetchStartedAt;
+  bool browserResponseStarted = false;
+
+  // A phone may discard an HTTP response that sends no bytes for several
+  // minutes even while the device is actively downloading upstream. Start a
+  // chunked JSON response only once the operation becomes long-running, then
+  // send JSON whitespace to keep that browser-facing connection active.
+  const auto keepBrowserAlive = [this, &browserResponseStarted, &lastBrowserHeartbeat]() {
+    const unsigned long now = millis();
+    if (now - lastBrowserHeartbeat < 5000) return;
+    lastBrowserHeartbeat = now;
+    if (!server->client().connected()) return;
+    if (!browserResponseStarted) {
+      server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+      server->send(200, "application/json", "");
+      browserResponseStarted = true;
+    }
+    server->sendContent(" \n", 2);
+  };
+  const auto sendFetchResult = [this, &browserResponseStarted](int code, const String& payload) {
+    if (!browserResponseStarted) {
+      server->send(code, "application/json", payload);
+      return;
+    }
+    if (server->client().connected()) {
+      server->sendContent(payload);
+      server->sendContent("", 0);
+    }
+  };
+
   for (int attempt = 0; attempt < FETCH_MAX_TOTAL_ATTEMPTS && stalled < FETCH_MAX_STALLED_ATTEMPTS; ++attempt) {
     freeink::SecureHttpClient http;
     http.setUserAgent("CrossPoint");
@@ -2191,11 +2229,8 @@ void CrossPointWebServer::handleFetch() {
       status = -1;
       break;
     }
-    if (req["headers"].is<JsonObject>()) {
-      for (JsonPair kv : req["headers"].as<JsonObject>()) {
-        const char* v = kv.value().as<const char*>();
-        http.addHeader(kv.key().c_str(), v ? v : "");
-      }
+    for (const auto& header : requestHeaders) {
+      http.addHeader(header.first, header.second);
     }
     const bool resuming = written > 0;
     if (resuming) {
@@ -2234,13 +2269,15 @@ void CrossPointWebServer::handleFetch() {
             LOG_DBG("WEB", "Fetch %u bytes, heap %u", (unsigned)written, (unsigned)ESP.getFreeHeap());
             nextHeapLog = written + 64 * 1024;
           }
+          keepBrowserAlive();
           return true;
         },
         // The data callback only runs when bytes arrive; with the 60s
         // no-data timeout a server stall would starve this task's WDT
         // subscription. shouldAbort is polled in every wait loop.
-        [this]() {
+        [this, &keepBrowserAlive]() {
           resetTaskWatchdogIfSubscribed();
+          keepBrowserAlive();
           return false;  // never aborts; only feeds
         });
     if (sdFull || rewindFailed) break;
@@ -2264,7 +2301,9 @@ void CrossPointWebServer::handleFetch() {
     char msg[96];
     snprintf(msg, sizeof(msg), "{\"error\":\"%s\",\"bytes\":%u}", sdFull ? "sd write failed" : "download truncated",
              (unsigned)written);
-    server->send(502, "application/json", msg);
+    LOG_ERR("WEB", "Fetch failed after %u bytes in %lu ms: %s", (unsigned)written, millis() - fetchStartedAt,
+            url.c_str());
+    sendFetchResult(502, msg);
     return;
   }
 
@@ -2277,7 +2316,10 @@ void CrossPointWebServer::handleFetch() {
   resp["bytes"] = written;
   String out;
   serializeJson(resp, out);
-  server->send(200, "application/json", out);
+  const bool browserConnected = server->client().connected();
+  LOG_INF("WEB", "Fetch %s: %u bytes in %lu ms, browser %s: %s", complete ? "complete" : "failed",
+          (unsigned)written, millis() - fetchStartedAt, browserConnected ? "connected" : "disconnected", url.c_str());
+  sendFetchResult(200, out);
 }
 
 // POST /api/plugin-fs?plugin=<name>&path=<path> with a raw request body.
