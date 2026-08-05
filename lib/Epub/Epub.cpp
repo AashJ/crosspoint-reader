@@ -799,8 +799,7 @@ uint8_t* Epub::readItemContentsToBytes(const std::string& itemHref, size_t* size
     const size_t total = plainSize + (trailingNullByte ? 1 : 0);
     uint8_t* content = static_cast<uint8_t*>(malloc(total > 0 ? total : 1));
     if (!content) {
-      LOG_ERR("EBP", "insufficient memory for %s (%u bytes)", path.c_str(),
-              static_cast<unsigned>(total));
+      LOG_ERR("EBP", "insufficient memory for %s (%u bytes)", path.c_str(), static_cast<unsigned>(total));
       return nullptr;
     }
     struct BufferSink {

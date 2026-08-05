@@ -2353,8 +2353,8 @@ void CrossPointWebServer::handleFetch() {
     if (totalExpected > 0) resp["total"] = totalExpected;
     String out;
     serializeJson(resp, out);
-    LOG_INF("WEB", "Fetch segment complete: %u bytes total in %lu ms: %s", (unsigned)written,
-            millis() - fetchStartedAt, url.c_str());
+    LOG_INF("WEB", "Fetch segment complete: %u bytes total in %lu ms: %s", (unsigned)written, millis() - fetchStartedAt,
+            url.c_str());
     sendFetchResult(200, out);
     return;
   }
@@ -2382,8 +2382,8 @@ void CrossPointWebServer::handleFetch() {
   String out;
   serializeJson(resp, out);
   const bool browserConnected = server->client().connected();
-  LOG_INF("WEB", "Fetch %s: %u bytes in %lu ms, browser %s: %s", complete ? "complete" : "failed",
-          (unsigned)written, millis() - fetchStartedAt, browserConnected ? "connected" : "disconnected", url.c_str());
+  LOG_INF("WEB", "Fetch %s: %u bytes in %lu ms, browser %s: %s", complete ? "complete" : "failed", (unsigned)written,
+          millis() - fetchStartedAt, browserConnected ? "connected" : "disconnected", url.c_str());
   sendFetchResult(200, out);
 }
 
