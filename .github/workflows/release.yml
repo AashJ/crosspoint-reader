@@ -7,6 +7,13 @@ on:
 jobs:
   build-release:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - pio_env: gh_release
+            artifact_name: firmware-x4_x3
+          - pio_env: sticky
+            artifact_name: firmware-sticky
     steps:
       - uses: actions/checkout@v6
         with:
@@ -33,15 +40,22 @@ jobs:
           restore-keys: pio-${{ runner.os }}-
 
       - name: Build CrossPoint
-        run: pio run -e gh_release
+        env:
+          CROSSPOINT_RELEASE_BUILD: "1"
+        run: pio run -e ${{ matrix.pio_env }} -j1
+
+      - name: Name Release Firmware
+        run: |
+          cp ".pio/build/${{ matrix.pio_env }}/firmware.bin" \
+            ".pio/build/${{ matrix.pio_env }}/${{ matrix.artifact_name }}.bin"
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: CrossPoint-${{ github.ref_name }}
+          name: ${{ matrix.artifact_name }}
           path: |
-            .pio/build/gh_release/bootloader.bin
-            .pio/build/gh_release/firmware.bin
-            .pio/build/gh_release/firmware.elf
-            .pio/build/gh_release/firmware.map
-            .pio/build/gh_release/partitions.bin
+            .pio/build/${{ matrix.pio_env }}/bootloader.bin
+            .pio/build/${{ matrix.pio_env }}/${{ matrix.artifact_name }}.bin
+            .pio/build/${{ matrix.pio_env }}/firmware.elf
+            .pio/build/${{ matrix.pio_env }}/firmware.map
+            .pio/build/${{ matrix.pio_env }}/partitions.bin

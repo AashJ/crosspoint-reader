@@ -1,9 +1,20 @@
 """
-PlatformIO pre-build script: inject git branch and short SHA into
-CROSSPOINT_VERSION for the default (dev) environment.
+PlatformIO pre-build script: set the embedded CROSSPOINT_VERSION.
 
-Results in a version string like:  1.1.0-dev-feat-kosync-xpath-05c6cf8
-Release environments are unaffected; they set CROSSPOINT_VERSION in the ini.
+Version schema by device and build type:
+
+  X3/X4 development:  <base>-dev-<branch>-<git-sha>
+  X3/X4 production:   <base>
+  X3/X4 RC:           <base>-rc+<git-sha>
+
+  Sticky development: <base>-dev-<branch>-<git-sha>
+  Sticky production:  <base>
+  Sticky RC:          <base>-rc+<git-sha>
+
+This script injects the X3/X4 development and all Sticky versions. The
+dedicated X3/X4 production and RC environments set their versions in
+platformio.ini. CI marks production builds with CROSSPOINT_RELEASE_BUILD and
+supplies the seven-character RC SHA through CROSSPOINT_RC_HASH.
 """
 
 import configparser
@@ -77,16 +88,22 @@ def get_base_version(project_dir):
 
 
 def inject_version(env):
-    # Only applies to the dev (default) environment; release envs set the
-    # version via build_flags in platformio.ini and are unaffected.
-    if env['PIOENV'] != 'default':
+    pioenv = env['PIOENV']
+    if pioenv not in ('default', 'sticky'):
         return
 
     project_dir = env['PROJECT_DIR']
     base_version = get_base_version(project_dir)
-    branch = get_git_branch(project_dir)
-    short_sha = get_git_short_sha(project_dir)
-    version_string = f'{base_version}-dev-{branch}-{short_sha}'
+
+    rc_hash = os.environ.get('CROSSPOINT_RC_HASH')
+    if pioenv == 'sticky' and rc_hash:
+        version_string = f'{base_version}-rc+{rc_hash}'
+    elif pioenv == 'sticky' and os.environ.get('CROSSPOINT_RELEASE_BUILD'):
+        version_string = base_version
+    else:
+        branch = get_git_branch(project_dir)
+        short_sha = get_git_short_sha(project_dir)
+        version_string = f'{base_version}-dev-{branch}-{short_sha}'
 
     env.Append(CPPDEFINES=[('CROSSPOINT_VERSION', f'\\"{version_string}\\"')])
     print(f'CrossPoint build version: {version_string}')
