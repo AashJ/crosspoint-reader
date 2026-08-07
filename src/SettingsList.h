@@ -340,7 +340,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                           "frontButtonOrientationAware", StrId::STR_CAT_CONTROLS),
         SettingInfo::Enum(StrId::STR_LONG_PRESS_BEHAVIOR, &CrossPointSettings::longPressButtonBehavior,
                           {StrId::STR_LONG_PRESS_BEHAVIOR_OFF, StrId::STR_LONG_PRESS_BEHAVIOR_SKIP,
-                           StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION, StrId::STR_LONG_PRESS_BEHAVIOR_FONT_SIZE},
+                           StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION},
                           "longPressButtonBehavior", StrId::STR_CAT_CONTROLS),
         buildLongPressActionSetting(StrId::STR_LONG_PRESS_MENU, &CrossPointSettings::longPressMenuAction,
                                     "longPressMenuAction"),
@@ -359,7 +359,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                             "sideButtonOrientationAware", StrId::STR_CAT_CONTROLS),
         SettingInfo::Enum(StrId::STR_LONG_PRESS_ACTION, &CrossPointSettings::sideButtonLongPress,
                           {StrId::STR_LONG_PRESS_BEHAVIOR_OFF, StrId::STR_LONG_PRESS_BEHAVIOR_SKIP,
-                           StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION, StrId::STR_LONG_PRESS_BEHAVIOR_FONT_SIZE},
+                           StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION},
                           "sideButtonLongPress", StrId::STR_CAT_CONTROLS),
 
         // --- Controls: Touch ---

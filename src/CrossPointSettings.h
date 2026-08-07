@@ -106,13 +106,13 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     FRONT_ORIENTATION_AWARE_COUNT
   };
 
-  // Side button long-press action in the reader. Kept separate from
-  // longPressButtonBehavior so the side and front pairs can differ.
+  // Side button long-press action in the reader. Kept separate from longPressButtonBehavior so
+  // the side and front pairs can differ; the values deliberately match it, which is what lets
+  // the migration copy one into the other.
   enum SIDE_LONG_PRESS {
     SIDE_LONG_OFF = 0,
     SIDE_LONG_CHAPTER_SKIP = 1,
     SIDE_LONG_ORIENTATION_CHANGE = 2,
-    SIDE_LONG_FONT_SIZE = 3,
     SIDE_LONG_PRESS_COUNT
   };
 
@@ -210,7 +210,6 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     OFF = 0,
     CHAPTER_SKIP = 1,
     ORIENTATION_CHANGE = 2,
-    FONT_SIZE_CHANGE = 3,
     LONG_PRESS_BUTTON_BEHAVIOR_COUNT
   };
 

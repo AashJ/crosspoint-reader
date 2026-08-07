@@ -10,6 +10,7 @@
 #include "EpubReaderMenuActivity.h"
 #include "ProgressMapper.h"
 #include "activities/Activity.h"
+#include "util/ShortcutAction.h"
 
 class EpubReaderActivity final : public Activity {
   std::shared_ptr<Epub> epub;
@@ -192,6 +193,16 @@ class EpubReaderActivity final : public Activity {
   // Footnote navigation
   void navigateToHref(const std::string& href, bool savePosition = false);
   void restoreSavedPosition();
+  // Opens the footnotes on this page, or returns from one when pwrBtnFootnoteBack is on.
+  void openOrReturnFromFootnotes();
+
+  // Runs a configured shortcut. Reader-only actions are handled here; the rest fall through to
+  // runGlobalShortcut(). Returns false when the action did nothing, so the caller can let the
+  // triggering button keep its normal meaning.
+  bool runReaderShortcut(ShortcutAction action);
+
+  // Set while a long Back hold has already run its action, so the release does not navigate.
+  bool backActionFired = false;
 
  public:
   explicit EpubReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Epub> epub,

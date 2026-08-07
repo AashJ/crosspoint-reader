@@ -527,39 +527,13 @@ void EpubReaderActivity::loop() {
   }
 
   // Long-press Confirm runs the user-selected quick action (SETTINGS.longPressMenuAction).
-  if (mappedInput.isPressed(MappedInputManager::Button::Confirm)) {
-    switch (SETTINGS.longPressMenuAction) {
-      case CrossPointSettings::LONG_ACTION_TOGGLE_BOOKMARK:
-        // Hold ~0.4s drops a bookmark at the current page.
-        if (mappedInput.getHeldTime() >= ReaderUtils::BOOKMARK_HOLD_MS && !showBookmarkMessage) {
-          addBookmark();
-          showBookmarkMessage = true;
-          ignoreNextConfirmRelease = true;  // Prevent accidental menu open after adding bookmark
-          bookmarkMessageTime = millis();
-          requestUpdate();
-        }
-        break;
-      case CrossPointSettings::LONG_ACTION_SYNC_PROGRESS:
-        // Hold ~1s launches KOReader sync. If sync can't run (no credentials stored), fall
-        // through so the normal Confirm-release still opens the reader menu.
-        if (mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
-          if (launchKOReaderSync()) {
-            ignoreNextConfirmRelease = true;  // sync launched or error shown; suppress menu open
-            return;
-          }
-        }
-        break;
-      case CrossPointSettings::LONG_ACTION_LOOKUP_WORD:
-        // Hold ~0.4s starts dictionary word selection on the current page.
-        if (mappedInput.getHeldTime() >= ReaderUtils::BOOKMARK_HOLD_MS && !showDictionaryMessage) {
-          ignoreNextConfirmRelease = true;  // Prevent menu open on the release that follows
-          openDictionaryWordSelect();
-          return;
-        }
-        break;
-      case CrossPointSettings::LONG_ACTION_OFF:
-      default:
-        break;
+  // If the action declines (sync with no credentials stored, no footnotes on the page) the
+  // Confirm release is left alone, so it still opens the reader menu as usual.
+  if (mappedInput.isPressed(MappedInputManager::Button::Confirm) && !ignoreNextConfirmRelease &&
+      mappedInput.getHeldTime() >= ReaderUtils::BOOKMARK_HOLD_MS) {
+    if (runReaderShortcut(shortcutFromLongPressSetting(SETTINGS.longPressMenuAction))) {
+      ignoreNextConfirmRelease = true;
+      return;
     }
   }
 
@@ -570,6 +544,24 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  // Long-press Back runs the configured quick action. FILE_BROWSER means "leave it alone" —
+  // that is the navigation handleBackNavigation() already performs, together with
+  // backShortToFileBrowser.
+  if (SETTINGS.longPressBackAction != CrossPointSettings::LONG_ACTION_FILE_BROWSER) {
+    if (mappedInput.isPressed(MappedInputManager::Button::Back) &&
+        mappedInput.getHeldTime() >= ReaderUtils::GO_BACK_OR_HOME_MS) {
+      if (!backActionFired) {
+        backActionFired = true;
+        runReaderShortcut(shortcutFromLongPressSetting(SETTINGS.longPressBackAction));
+      }
+      return;  // Absorb the rest of the hold so it cannot also navigate.
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back) && backActionFired) {
+      backActionFired = false;
+      return;
+    }
+  }
+
   if (ReaderUtils::handleBackNavigation(mappedInput, activityManager, epub ? epub->getPath().c_str() : "",
                                         {this, [](void* ctx) { static_cast<EpubReaderActivity*>(ctx)->onGoHome(); }})) {
     return;
@@ -577,31 +569,19 @@ void EpubReaderActivity::loop() {
 
   // auto [prevTriggered, nextTriggered] = ReaderUtils::detectPageTurn(mappedInput);
 
-  // Handle short power button press for footnotes
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FOOTNOTES &&
-      mappedInput.wasReleased(MappedInputManager::Button::Power) &&
+  // Reader-only power button shortcuts. The globally-available ones are dispatched from the
+  // main loop; these need an open book, so they are handled here.
+  if (mappedInput.wasReleased(MappedInputManager::Button::Power) &&
       !mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-    if (footnoteDepth > 0) {
-      restoreSavedPosition();
-    } else {
-      if (currentPageFootnotes.size() == 1) {
-        navigateToHref(currentPageFootnotes[0].href, true);
-      } else if (currentPageFootnotes.size() > 1) {
-        startActivityForResult(
-            std::make_unique<EpubReaderFootnotesActivity>(renderer, mappedInput, currentPageFootnotes),
-            [this](const ActivityResult& result) {
-              if (!result.isCancelled) {
-                const auto& footnoteResult = std::get<FootnoteResult>(result.data);
-                navigateToHref(footnoteResult.href, true);
-              }
-              requestUpdate();
-            });
-      }
+    const auto shortAction = shortcutFromPowerButtonSetting(SETTINGS.shortPwrBtn);
+    const bool wasHold = mappedInput.getHeldTime() > SETTINGS.getPowerButtonDuration();
+    const auto action = wasHold ? shortcutFromPowerButtonSetting(SETTINGS.longPwrBtn) : shortAction;
+    if (!isShortcutAvailableOutsideReader(action) && runReaderShortcut(action)) {
+      return;
     }
-    return;
   }
 
-  auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput);
+  auto [prevTriggered, nextTriggered, fromTilt, fromSide] = ReaderUtils::detectPageTurn(mappedInput);
   prevTriggered = prevTriggered || touch.prev;
   nextTriggered = nextTriggered || touch.next;
   if (!prevTriggered && !nextTriggered) {
@@ -629,13 +609,16 @@ void EpubReaderActivity::loop() {
 
   const unsigned long heldMs = (touch.prev || touch.next) ? touch.heldMs : mappedInput.getHeldTime();
   const bool longPress = !fromTilt && heldMs > ReaderUtils::SKIP_HOLD_MS;
+  // The side and front pairs carry separate long-press bindings; the values line up, so the
+  // behaviour below only needs to know which of the two to read.
+  const uint8_t longPressBehavior = fromSide ? SETTINGS.sideButtonLongPress : SETTINGS.longPressButtonBehavior;
 
   // Don't skip chapter after screenshot
   if (gpio.wasReleased(HalGPIO::BTN_POWER) && gpio.wasReleased(HalGPIO::BTN_DOWN)) {
     return;
   }
 
-  if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.CHAPTER_SKIP) {
+  if (longPress && longPressBehavior == SETTINGS.CHAPTER_SKIP) {
     if (!nextTriggered && section && section->currentPage > 0) {
       section->currentPage = 0;
       requestUpdate();
@@ -657,7 +640,7 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  if (longPress && SETTINGS.longPressButtonBehavior == SETTINGS.ORIENTATION_CHANGE) {
+  if (longPress && longPressBehavior == SETTINGS.ORIENTATION_CHANGE) {
     const uint8_t newOrientation =
         nextTriggered ? (SETTINGS.orientation - 1 + SETTINGS.ORIENTATION_COUNT) % SETTINGS.ORIENTATION_COUNT
                       : (SETTINGS.orientation + 1) % SETTINGS.ORIENTATION_COUNT;
@@ -1943,6 +1926,55 @@ void EpubReaderActivity::restoreSavedPosition() {
     section.reset();
   }
   requestUpdate();
+}
+
+void EpubReaderActivity::openOrReturnFromFootnotes() {
+  // While a footnote is open the shortcut doubles as a way back out, unless the user turned
+  // that off and wants it to keep opening footnotes instead.
+  if (footnoteDepth > 0 && SETTINGS.pwrBtnFootnoteBack) {
+    restoreSavedPosition();
+    return;
+  }
+  if (currentPageFootnotes.size() == 1) {
+    navigateToHref(currentPageFootnotes[0].href, true);
+    return;
+  }
+  if (currentPageFootnotes.size() > 1) {
+    startActivityForResult(std::make_unique<EpubReaderFootnotesActivity>(renderer, mappedInput, currentPageFootnotes),
+                           [this](const ActivityResult& result) {
+                             if (!result.isCancelled) {
+                               const auto& footnoteResult = std::get<FootnoteResult>(result.data);
+                               navigateToHref(footnoteResult.href, true);
+                             }
+                             requestUpdate();
+                           });
+  }
+}
+
+bool EpubReaderActivity::runReaderShortcut(const ShortcutAction action) {
+  switch (action) {
+    case ShortcutAction::Footnotes:
+      // Nothing to open and nothing to return from: let the button keep its normal meaning.
+      if (currentPageFootnotes.empty() && footnoteDepth == 0) return false;
+      openOrReturnFromFootnotes();
+      return true;
+    case ShortcutAction::ToggleBookmark:
+      addBookmark();
+      showBookmarkMessage = true;
+      bookmarkMessageTime = millis();
+      requestUpdate();
+      return true;
+    case ShortcutAction::SyncProgress:
+      // Returns false when no KOReader credentials are stored, which is a no-op worth
+      // falling through from rather than swallowing the press.
+      return launchKOReaderSync();
+    case ShortcutAction::LookUpWord:
+      if (showDictionaryMessage) return false;
+      openDictionaryWordSelect();
+      return true;
+    default:
+      return runGlobalShortcut(action, renderer);
+  }
 }
 
 void EpubReaderActivity::loadCachedBookmarks() {

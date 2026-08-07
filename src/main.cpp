@@ -34,6 +34,7 @@
 #include "images/LoadingIcon.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
+#include "util/ShortcutAction.h"
 
 GfxRenderer renderer(display);
 MappedInputManager mappedInputManager(gpio, renderer);
@@ -532,24 +533,33 @@ void loop() {
     return;
   }
 
-  if (millis() >= allowSleepAt && gpio.isPressed(HalGPIO::BTN_POWER) &&
-      gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
-    // If the screenshot combination is potentially being pressed, don't sleep
-    if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
-      return;
+  // Power button shortcuts: a hold past the configured duration runs longPwrBtn (Sleep by
+  // default, which is what a hold has always done), a release before that runs shortPwrBtn.
+  // Only actions that need no open book are dispatched here; the reader picks up the rest,
+  // which is also why a reader-only binding does nothing outside a reader.
+  static bool longPowerActionFired = false;
+  if (gpio.isPressed(HalGPIO::BTN_POWER)) {
+    if (millis() >= allowSleepAt && !longPowerActionFired &&
+        gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
+      // If the screenshot combination is potentially being pressed, don't act
+      if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
+        return;
+      }
+      // Latched even for reader-only actions, so the release that ends the hold does not also
+      // fire the short-press action on top.
+      longPowerActionFired = true;
+      const auto action = shortcutFromPowerButtonSetting(SETTINGS.longPwrBtn);
+      if (isShortcutAvailableOutsideReader(action) && runGlobalShortcut(action, renderer)) {
+        // Sleep never returns here — it calls esp_deep_sleep_start.
+        return;
+      }
     }
-    enterDeepSleep();
-    // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
-    return;
-  }
-
-  // Refresh screen when power button is short-pressed with FORCE_REFRESH setting.
-  if (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FORCE_REFRESH &&
-      mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
-    LOG_DBG("MAIN", "Manual screen refresh triggered");
-    if (!activityManager.handleForcedRefresh()) {
-      RenderLock lock;
-      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  } else if (mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
+    const bool consumedByHold = longPowerActionFired;
+    longPowerActionFired = false;
+    const auto action = shortcutFromPowerButtonSetting(SETTINGS.shortPwrBtn);
+    if (!consumedByHold && isShortcutAvailableOutsideReader(action)) {
+      runGlobalShortcut(action, renderer);
     }
   }
 
