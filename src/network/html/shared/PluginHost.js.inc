@@ -5,6 +5,42 @@
   window.CrossPoint = window.CrossPoint || {
     _pending: null,
     registerPlugin(fn) { this._pending = fn; },
+    // --- plugin job queue -------------------------------------------------
+    // A plugin registers named actions; external systems enqueue jobs with
+    // POST /api/plugin-jobs, and any open page hosting the plugin (File
+    // Manager, Settings, or the headless /plugins-run page) claims and
+    // executes them here, then posts the result back for the caller to poll.
+    _actions: {},
+    _actionBusy: false,
+    _actionTimer: null,
+    registerAction(pluginName, action, fn) {
+      (this._actions[pluginName] = this._actions[pluginName] || {})[action] = fn;
+      if (!this._actionTimer) this._actionTimer = setInterval(() => this._pollJobs(), 2500);
+    },
+    async _pollJobs() {
+      if (this._actionBusy) return;
+      this._actionBusy = true;
+      try {
+        for (const plugin of Object.keys(this._actions)) {
+          let job;
+          try { job = await (await fetch('/api/plugin-jobs/claim?plugin=' + encodeURIComponent(plugin))).json(); }
+          catch (e) { continue; }
+          if (!job || !job.id) continue;
+          const fn = this._actions[plugin][job.action];
+          let ok = false;
+          let result;
+          if (!fn) {
+            result = { error: 'unknown action: ' + job.action };
+          } else {
+            try { result = (await fn(job.args || {})) || {}; ok = true; }
+            catch (e) { result = { error: String((e && e.message) || e) }; }
+          }
+          try { await this._post('/api/plugin-jobs/complete', { id: job.id, ok, result }); } catch (e) {}
+        }
+      } finally {
+        this._actionBusy = false;
+      }
+    },
     async _post(path, body) {
       const r = await fetch(path, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
@@ -81,7 +117,9 @@
     let list;
     try { list = await (await fetch('/api/plugins')).json(); } catch (e) { return; }
     for (const p of list) {
-      if ((p.mount || 'settings') !== mount) continue;
+      // A null mount loads everything: the headless runner page hosts all
+      // plugins so any registered action can execute there.
+      if (mount && (p.mount || 'settings') !== mount) continue;
       const container = document.createElement('div');
       container.className = 'card';
       container.id = 'plugin-' + p.name;
@@ -102,6 +140,7 @@
             crypto: (op, f) => CrossPoint.crypto(op, f),
             writeFile: (path, d) => CrossPoint.writeFile(p.name, path, d),
             fetchToSd: (u, dest, h) => CrossPoint.fetchToSd(p.name, u, dest, h),
+            registerAction: (a, fn) => CrossPoint.registerAction(p.name, a, fn),
             pluginFile: (f) => '/plugin?name=' + encodeURIComponent(p.name) + '&file=' + encodeURIComponent(f)
           });
         }

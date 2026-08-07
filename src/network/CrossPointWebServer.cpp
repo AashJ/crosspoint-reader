@@ -28,6 +28,7 @@
 #include "html/FilesPageHtml.generated.h"
 #include "html/FontsPageHtml.generated.h"
 #include "html/HomePageHtml.generated.h"
+#include "html/RunnerPageHtml.generated.h"
 #include "html/SettingsPageHtml.generated.h"
 #include "html/js/jszip_minJs.generated.h"
 #include "util/BookCacheUtils.h"
@@ -214,6 +215,11 @@ void CrossPointWebServer::begin() {
   // Browser-side plugins (JS on the SD card) + their generic capabilities.
   server->on("/api/plugins", HTTP_GET, [this] { handlePluginList(); });
   server->on("/plugin", HTTP_GET, [this] { handlePluginFile(); });
+  server->on("/plugins-run", HTTP_GET, [this] { handlePluginRunnerPage(); });
+  server->on("/api/plugin-jobs", HTTP_POST, [this] { handlePluginJobSubmit(); });
+  server->on("/api/plugin-jobs/claim", HTTP_GET, [this] { handlePluginJobClaim(); });
+  server->on("/api/plugin-jobs/complete", HTTP_POST, [this] { handlePluginJobComplete(); });
+  server->on("/api/plugin-jobs/status", HTTP_GET, [this] { handlePluginJobStatus(); });
   server->on("/api/relay", HTTP_POST, [this] { handleRelay(); });
   server->on("/api/crypto", HTTP_POST, [this] { handleCrypto(); });
   server->on("/api/fetch", HTTP_POST, [this] { handleFetch(); });
@@ -2442,6 +2448,122 @@ void CrossPointWebServer::handlePluginFs() {
   String out;
   serializeJson(resp, out);
   server->send(200, "application/json", out);
+}
+
+void CrossPointWebServer::handlePluginRunnerPage() const {
+  sendHtmlContent(server.get(), RunnerPageHtml, sizeof(RunnerPageHtml));
+  LOG_DBG("WEB", "Served plugin runner page");
+}
+
+CrossPointWebServer::PluginJob* CrossPointWebServer::allocPluginJob() {
+  PluginJob* best = nullptr;
+  for (auto& job : pluginJobs) {
+    if (job.state == JOB_EMPTY) return &job;
+    const bool finished = job.state == JOB_DONE || job.state == JOB_ERROR;
+    // A runner that died mid-job must not pin its slot forever.
+    const bool stale = job.state == JOB_RUNNING && millis() - job.updatedAt > 10UL * 60 * 1000;
+    if ((finished || stale) && (!best || job.updatedAt < best->updatedAt)) best = &job;
+  }
+  return best;
+}
+
+// POST /api/plugin-jobs {plugin, action, args?} -> {id}
+void CrossPointWebServer::handlePluginJobSubmit() {
+  if (!server->hasArg("plain")) {
+    server->send(400, "application/json", "{\"error\":\"missing body\"}");
+    return;
+  }
+  JsonDocument req;
+  if (deserializeJson(req, server->arg("plain")) != DeserializationError::Ok) {
+    server->send(400, "application/json", "{\"error\":\"bad json\"}");
+    return;
+  }
+  const String plugin = req["plugin"] | "";
+  const String action = req["action"] | "";
+  std::string args;
+  if (!req["args"].isNull()) serializeJson(req["args"], args);
+  if (!safeComponent(plugin) || action.isEmpty() || plugin.length() >= sizeof(PluginJob::plugin) ||
+      action.length() >= sizeof(PluginJob::action) || args.size() >= sizeof(PluginJob::args)) {
+    server->send(400, "application/json", "{\"error\":\"bad plugin/action/args\"}");
+    return;
+  }
+  PluginJob* job = allocPluginJob();
+  if (!job) {
+    server->send(503, "application/json", "{\"error\":\"job queue full\"}");
+    return;
+  }
+  *job = PluginJob{};
+  job->id = nextPluginJobId++;
+  job->state = JOB_PENDING;
+  job->updatedAt = millis();
+  snprintf(job->plugin, sizeof(job->plugin), "%s", plugin.c_str());
+  snprintf(job->action, sizeof(job->action), "%s", action.c_str());
+  snprintf(job->args, sizeof(job->args), "%s", args.c_str());
+  LOG_INF("WEB", "Plugin job %u queued: %s/%s", (unsigned)job->id, job->plugin, job->action);
+  char msg[48];
+  snprintf(msg, sizeof(msg), "{\"id\":%u}", (unsigned)job->id);
+  server->send(200, "application/json", msg);
+}
+
+// GET /api/plugin-jobs/claim?plugin=<name> -> {id, action, args} or {id:0}
+void CrossPointWebServer::handlePluginJobClaim() {
+  const String plugin = server->arg("plugin");
+  for (auto& job : pluginJobs) {
+    if (job.state != JOB_PENDING || plugin != job.plugin) continue;
+    job.state = JOB_RUNNING;
+    job.updatedAt = millis();
+    char msg[288];
+    snprintf(msg, sizeof(msg), "{\"id\":%u,\"action\":\"%s\",\"args\":%s}", (unsigned)job.id, job.action,
+             job.args[0] ? job.args : "{}");
+    server->send(200, "application/json", msg);
+    return;
+  }
+  server->send(200, "application/json", "{\"id\":0}");
+}
+
+// POST /api/plugin-jobs/complete {id, ok, result?} -> {ok}
+void CrossPointWebServer::handlePluginJobComplete() {
+  if (!server->hasArg("plain")) {
+    server->send(400, "application/json", "{\"error\":\"missing body\"}");
+    return;
+  }
+  JsonDocument req;
+  if (deserializeJson(req, server->arg("plain")) != DeserializationError::Ok) {
+    server->send(400, "application/json", "{\"error\":\"bad json\"}");
+    return;
+  }
+  const uint32_t id = req["id"] | 0;
+  for (auto& job : pluginJobs) {
+    if (job.id != id || job.state != JOB_RUNNING) continue;
+    job.state = (req["ok"] | false) ? JOB_DONE : JOB_ERROR;
+    job.updatedAt = millis();
+    std::string result;
+    if (!req["result"].isNull()) serializeJson(req["result"], result);
+    if (result.size() >= sizeof(job.result)) result = "{\"error\":\"result too large\"}";
+    snprintf(job.result, sizeof(job.result), "%s", result.c_str());
+    LOG_INF("WEB", "Plugin job %u %s", (unsigned)id, job.state == JOB_DONE ? "done" : "failed");
+    server->send(200, "application/json", "{\"ok\":true}");
+    return;
+  }
+  server->send(404, "application/json", "{\"error\":\"no such running job\"}");
+}
+
+// GET /api/plugin-jobs/status?id=<n> -> {id, state, result}
+void CrossPointWebServer::handlePluginJobStatus() {
+  const uint32_t id = strtoul(server->arg("id").c_str(), nullptr, 10);
+  static constexpr const char* kStateNames[] = {"empty", "pending", "running", "done", "error"};
+  for (auto& job : pluginJobs) {
+    if (job.id != id || job.state == JOB_EMPTY) continue;
+    char msg[288];
+    snprintf(msg, sizeof(msg), "{\"id\":%u,\"state\":\"%s\",\"result\":%s}", (unsigned)id, kStateNames[job.state],
+             job.result[0] ? job.result : "null");
+    server->send(200, "application/json", msg);
+    return;
+  }
+  // Unknown: never existed, or its slot was recycled after completion.
+  char msg[64];
+  snprintf(msg, sizeof(msg), "{\"id\":%u,\"state\":\"unknown\",\"result\":null}", (unsigned)id);
+  server->send(200, "application/json", msg);
 }
 
 // WebSocket callback trampoline

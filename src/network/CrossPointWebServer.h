@@ -155,6 +155,36 @@ class CrossPointWebServer {
   void handleFetch();             // POST /api/fetch     -> device downloads a URL to SD
   void handlePluginFs();          // POST /api/plugin-fs -> plugin writes a small file to SD
 
+  // SD-plugin job queue. External systems (a companion app, a script) enqueue
+  // {plugin, action, args}; any open page hosting the plugin (File Manager,
+  // Settings, or the headless /plugins-run page) claims and executes it, then
+  // posts the result. The firmware only stores small JSON blobs — plugin logic
+  // never runs on-device. Fixed pool inside this (heap-allocated, web-session
+  // lifetime) object: no allocation per job, oldest finished slot recycled.
+  struct PluginJob {
+    uint32_t id = 0;         // 0 = empty slot
+    uint32_t updatedAt = 0;  // millis() of last state change
+    uint8_t state = 0;
+    char plugin[24] = {0};
+    char action[24] = {0};
+    char args[192] = {0};    // JSON object, stored verbatim
+    char result[192] = {0};  // JSON object from the executor
+  };
+  static constexpr uint8_t JOB_EMPTY = 0;
+  static constexpr uint8_t JOB_PENDING = 1;
+  static constexpr uint8_t JOB_RUNNING = 2;
+  static constexpr uint8_t JOB_DONE = 3;
+  static constexpr uint8_t JOB_ERROR = 4;
+  static constexpr size_t MAX_PLUGIN_JOBS = 6;
+  PluginJob pluginJobs[MAX_PLUGIN_JOBS];
+  uint32_t nextPluginJobId = 1;
+  PluginJob* allocPluginJob();
+  void handlePluginRunnerPage() const;  // GET /plugins-run -> headless executor page
+  void handlePluginJobSubmit();         // POST /api/plugin-jobs          -> {id}
+  void handlePluginJobClaim();          // GET  /api/plugin-jobs/claim    -> next pending job for a plugin
+  void handlePluginJobComplete();       // POST /api/plugin-jobs/complete -> executor posts the outcome
+  void handlePluginJobStatus();         // GET  /api/plugin-jobs/status   -> external caller polls
+
   // An outbound transfer blocks the serving task for its whole duration, so
   // the WebSocket server and discovery UDP cannot answer anyone until it
   // finishes; their buffers are worth more as TLS headroom (4.4KB heap floor
