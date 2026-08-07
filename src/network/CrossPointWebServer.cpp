@@ -32,6 +32,7 @@
 #include "html/SettingsPageHtml.generated.h"
 #include "html/js/jszip_minJs.generated.h"
 #include "util/BookCacheUtils.h"
+#include "util/PluginLocations.h"
 #include "util/TaskWatchdog.h"
 
 namespace {
@@ -1696,7 +1697,6 @@ void CrossPointWebServer::handleDeleteWifiNetwork() {
 // ---------------------------------------------------------------------------
 
 namespace {
-constexpr const char* kPluginsDir = "/.crosspoint/plugins";
 
 // A path component is safe if it has no separators or parent refs.
 bool safeComponent(const String& s) {
@@ -1742,8 +1742,11 @@ void CrossPointWebServer::handlePluginList() const {
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
 
-  HalFile dir = Storage.open(kPluginsDir);
-  if (dir && dir.isDirectory()) {
+  std::vector<std::string> seen;  // earlier roots win on name collisions
+  seen.reserve(8);
+  for (size_t r = 0; r < PluginLocations::kRootCount; r++) {
+    HalFile dir = Storage.open(PluginLocations::kRoots[r]);
+    if (!dir || !dir.isDirectory()) continue;
     dir.rewindDirectory();
     for (HalFile entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
       char nameBuf[128] = {0};
@@ -1751,9 +1754,11 @@ void CrossPointWebServer::handlePluginList() const {
       const bool isDir = entry.isDirectory();
       entry.close();
       if (!isDir || nameBuf[0] == '.') continue;
+      if (std::find(seen.begin(), seen.end(), nameBuf) != seen.end()) continue;
 
-      const std::string base = std::string(kPluginsDir) + "/" + nameBuf;
+      const std::string base = std::string(PluginLocations::kRoots[r]) + "/" + nameBuf;
       if (!Storage.exists((base + "/plugin.js").c_str())) continue;
+      seen.emplace_back(nameBuf);
 
       JsonObject obj = arr.add<JsonObject>();
       obj["name"] = nameBuf;
@@ -1784,7 +1789,12 @@ void CrossPointWebServer::handlePluginFile() const {
     server->send(400, "text/plain", "bad plugin path");
     return;
   }
-  const std::string path = std::string(kPluginsDir) + "/" + name.c_str() + "/" + file.c_str();
+  const std::string pluginDir = PluginLocations::findPluginDir(name.c_str());
+  if (pluginDir.empty()) {
+    server->send(404, "text/plain", "not found");
+    return;
+  }
+  const std::string path = pluginDir + "/" + file.c_str();
   HalFile f = Storage.open(path.c_str(), O_RDONLY);
   if (!f || !f.isOpen() || f.isDirectory()) {
     if (f) f.close();

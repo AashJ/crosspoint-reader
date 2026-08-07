@@ -6,12 +6,17 @@ plugins compose. Adding or updating a plugin never requires a firmware build,
 and the firmware carries no vendor names, URLs, or file-format knowledge.
 
 ```
-/.crosspoint/plugins/<name>/
+<root>/<name>/
     manifest.json     web UI card metadata (optional)
     plugin.js         browser-side plugin (optional)
     device.json       on-device catalog screen (optional)
     ...assets
 ```
+
+`<root>` is any of `/.crosspoint/plugins`, `/plugins`, or `/.plugins` — the
+first two-dot-free options exist so plugins are easy to copy onto the card
+from a computer. All three roots are scanned; on a name collision the earlier
+root in that order wins.
 
 A plugin can ship any combination: `plugin.js` alone (web-only),
 `device.json` alone (on-device only), or both (e.g. sign in from either side,

@@ -10,6 +10,8 @@
 #include <SecureHttpClient.h>
 #include <WiFi.h>
 
+#include <algorithm>
+
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -17,10 +19,10 @@
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
 #include "util/BookCacheUtils.h"
+#include "util/PluginLocations.h"
 #include "util/QrUtils.h"
 
 namespace {
-constexpr const char* kPluginsDir = "/.crosspoint/plugins";
 constexpr size_t MAX_MANIFEST_SIZE = 8 * 1024;
 constexpr size_t MAX_TOKEN_FILE_SIZE = 2 * 1024;
 // A page of filtered catalog JSON measures ~20KB; the cap bounds a
@@ -188,26 +190,31 @@ void readHeaders(JsonVariantConst node, std::vector<std::pair<std::string, std::
 
 std::vector<PluginCatalogRef> discoverPluginCatalogs() {
   std::vector<PluginCatalogRef> catalogs;
-  HalFile root = Storage.open(kPluginsDir);
-  if (!root || !root.isDirectory()) return catalogs;
-  for (HalFile entry = root.openNextFile(); entry; entry = root.openNextFile()) {
-    if (!entry.isDirectory()) continue;
-    char name[64];
-    if (entry.getName(name, sizeof(name)) == 0 || name[0] == '.') continue;
-    std::string manifestPath = std::string(kPluginsDir) + "/" + name + "/device.json";
-    if (!Storage.exists(manifestPath.c_str())) continue;
-    std::string raw;
-    std::string title = name;
-    if (readSmallFile(manifestPath, MAX_MANIFEST_SIZE, raw)) {
-      JsonDocument filter;
-      filter["title"] = true;
-      JsonDocument doc;
-      if (deserializeJson(doc, raw, DeserializationOption::Filter(filter)) == DeserializationError::Ok &&
-          doc["title"].is<const char*>()) {
-        title = doc["title"].as<const char*>();
+  std::vector<std::string> seen;  // earlier roots win on name collisions
+  for (size_t r = 0; r < PluginLocations::kRootCount; r++) {
+    HalFile root = Storage.open(PluginLocations::kRoots[r]);
+    if (!root || !root.isDirectory()) continue;
+    for (HalFile entry = root.openNextFile(); entry; entry = root.openNextFile()) {
+      if (!entry.isDirectory()) continue;
+      char name[64];
+      if (entry.getName(name, sizeof(name)) == 0 || name[0] == '.') continue;
+      if (std::find(seen.begin(), seen.end(), name) != seen.end()) continue;
+      std::string manifestPath = std::string(PluginLocations::kRoots[r]) + "/" + name + "/device.json";
+      if (!Storage.exists(manifestPath.c_str())) continue;
+      seen.emplace_back(name);
+      std::string raw;
+      std::string title = name;
+      if (readSmallFile(manifestPath, MAX_MANIFEST_SIZE, raw)) {
+        JsonDocument filter;
+        filter["title"] = true;
+        JsonDocument doc;
+        if (deserializeJson(doc, raw, DeserializationOption::Filter(filter)) == DeserializationError::Ok &&
+            doc["title"].is<const char*>()) {
+          title = doc["title"].as<const char*>();
+        }
       }
+      catalogs.push_back({std::move(title), std::move(manifestPath)});
     }
-    catalogs.push_back({std::move(title), std::move(manifestPath)});
   }
   return catalogs;
 }
