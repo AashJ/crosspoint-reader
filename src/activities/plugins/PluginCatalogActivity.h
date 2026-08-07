@@ -32,7 +32,7 @@ bool anyPluginInstalled();
  */
 class PluginCatalogActivity final : public Activity {
  public:
-  enum class State { CHECK_WIFI, WIFI_SELECTION, LOADING, BROWSING, DOWNLOADING, ERROR, NO_TOKEN, AUTH };
+  enum class State { CHECK_WIFI, WIFI_SELECTION, LOADING, BROWSING, DOWNLOADING, DONE, ERROR, NO_TOKEN, AUTH };
 
   explicit PluginCatalogActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string manifestPath,
                                  std::string title)
@@ -138,7 +138,6 @@ class PluginCatalogActivity final : public Activity {
   void fetchPage(int newPage);
   void fetchXmlList();
   void activateSelected();  // XML list: navigate into a folder, else download
-  int visibleRows() const;  // list rows that fit on screen at the current size
   void downloadItem(const Item& item);
   void beginAuth();
   void pollAuth();

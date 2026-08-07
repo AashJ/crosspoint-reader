@@ -30,10 +30,6 @@ constexpr size_t MAX_TOKEN_FILE_SIZE = 2 * 1024;
 // misbehaving server, not normal use.
 constexpr size_t MAX_API_RESPONSE = 48 * 1024;
 constexpr int MAX_PAGE_SIZE = 16;
-constexpr int HEADER_Y = 15;
-constexpr int HEADER_X = 16;
-constexpr int LIST_TOP = 60;
-constexpr int ROW_STEP = 30;
 constexpr int DOWNLOAD_PROGRESS_STEP_PERCENT = 5;
 constexpr unsigned long DOWNLOAD_PROGRESS_MIN_UPDATE_MS = 5000;
 
@@ -186,6 +182,28 @@ void readHeaders(JsonVariantConst node, std::vector<std::pair<std::string, std::
   for (JsonPairConst kv : node.as<JsonObjectConst>()) {
     out.emplace_back(kv.key().c_str(), kv.value().as<const char*>() ? kv.value().as<const char*>() : "");
   }
+}
+
+// Themed list geometry, so the catalog matches every other list screen.
+struct CatLayout {
+  Rect header;
+  Rect list;
+  int rowStep;
+  int pageItems;
+};
+CatLayout catLayout(const GfxRenderer& renderer) {
+  const auto& m = UITheme::getInstance().getMetrics();
+  const int w = renderer.getScreenWidth();
+  const int listTop = m.topPadding + m.headerHeight + m.verticalSpacing;
+  const int listHeight =
+      renderer.getScreenHeight() - (m.topPadding + m.headerHeight + m.buttonHintsHeight + m.verticalSpacing * 2);
+  CatLayout l;
+  l.header = Rect{0, m.topPadding, w, m.headerHeight};
+  l.list = Rect{0, listTop, w, listHeight};
+  l.rowStep = GUI.getListRowStep(/*hasSubtitle=*/true);
+  l.pageItems = GUI.getListPageItems(listHeight, /*hasSubtitle=*/true);
+  if (l.pageItems < 1) l.pageItems = 1;
+  return l;
 }
 
 // --- XML-list helpers -----------------------------------------------------
@@ -1044,7 +1062,8 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
     }
   }
 
-  state = State::BROWSING;
+  state = State::DONE;
+  statusMessage = item.title;
   requestUpdate();
 }
 
@@ -1091,8 +1110,20 @@ void PluginCatalogActivity::loop() {
     return;
   }
 
+  if (state == State::DONE) {
+    int tx = 0;
+    int ty = 0;
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
+        mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasScreenTapped(tx, ty)) {
+      state = State::BROWSING;
+      requestUpdate();
+    }
+    return;
+  }
+
   // BROWSING
-  const int rows = visibleRows();
+  const CatLayout layout = catLayout(renderer);
+  const int rows = layout.pageItems;
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (!items.empty()) activateSelected();
     return;
@@ -1121,7 +1152,7 @@ void PluginCatalogActivity::loop() {
 
   if (!items.empty()) {
     int row = -1;
-    const auto touch = mappedInput.rowTouch(row, LIST_TOP, ROW_STEP, rows);
+    const auto touch = mappedInput.rowTouch(row, layout.list.y, layout.rowStep, rows);
     if (touch != MappedInputManager::RowTouch::None) {
       const int touched = selectorIndex / rows * rows + row;
       if (touched >= 0 && touched < static_cast<int>(items.size())) {
@@ -1157,12 +1188,6 @@ void PluginCatalogActivity::loop() {
   }
 }
 
-int PluginCatalogActivity::visibleRows() const {
-  const int avail = renderer.getScreenHeight() - LIST_TOP - UITheme::getInstance().getMetrics().buttonHintsHeight;
-  const int rows = avail / ROW_STEP;
-  return rows < 1 ? 1 : rows;
-}
-
 void PluginCatalogActivity::activateSelected() {
   if (items.empty() || selectorIndex < 0 || selectorIndex >= static_cast<int>(items.size())) return;
   const Item& item = items[selectorIndex];
@@ -1180,8 +1205,11 @@ void PluginCatalogActivity::activateSelected() {
 
 void PluginCatalogActivity::render(RenderLock&&) {
   renderer.clearScreen();
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  const auto& m = UITheme::getInstance().getMetrics();
+  const int centerY = pageHeight / 2;
+  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
 
   std::string header = catalogTitle;
   if (state == State::BROWSING && page > 1) {
@@ -1189,11 +1217,10 @@ void PluginCatalogActivity::render(RenderLock&&) {
     snprintf(suffix, sizeof(suffix), " %d", page);
     header += suffix;
   }
-  const auto clippedHeader = renderer.truncatedText(UI_12_FONT_ID, header.c_str(), pageWidth - HEADER_X * 2);
-  renderer.drawText(UI_12_FONT_ID, HEADER_X, HEADER_Y, clippedHeader.c_str(), true, EpdFontFamily::BOLD);
+  GUI.drawHeader(renderer, Rect{0, m.topPadding, pageWidth, m.headerHeight}, header.c_str());
 
   if (state == State::CHECK_WIFI || state == State::LOADING) {
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, statusMessage.c_str());
+    renderer.drawCenteredText(UI_10_FONT_ID, centerY, statusMessage.c_str());
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     renderer.displayBuffer();
@@ -1202,11 +1229,12 @@ void PluginCatalogActivity::render(RenderLock&&) {
 
   if (state == State::AUTH) {
     // Device-code sign-in: verification URL (text + QR) and the user code.
-    renderer.drawCenteredText(UI_10_FONT_ID, 70, authVerifyUrl.c_str());
-    renderer.drawCenteredText(UI_12_FONT_ID, 105, authUserCode.c_str(), true, EpdFontFamily::BOLD);
+    const int top = m.topPadding + m.headerHeight + m.verticalSpacing;
+    renderer.drawCenteredText(UI_10_FONT_ID, top, authVerifyUrl.c_str());
+    renderer.drawCenteredText(UI_12_FONT_ID, top + 35, authUserCode.c_str(), true, EpdFontFamily::BOLD);
     const int qrSize = 180;
-    QrUtils::drawQrCode(renderer, Rect{(pageWidth - qrSize) / 2, 140, qrSize, qrSize}, authVerifyUrl);
-    renderer.drawCenteredText(UI_10_FONT_ID, 140 + qrSize + 30, tr(STR_PLUGIN_AUTH_WAITING));
+    QrUtils::drawQrCode(renderer, Rect{(pageWidth - qrSize) / 2, top + 70, qrSize, qrSize}, authVerifyUrl);
+    renderer.drawCenteredText(UI_10_FONT_ID, top + 70 + qrSize + 20, tr(STR_PLUGIN_AUTH_WAITING));
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     renderer.displayBuffer();
@@ -1216,11 +1244,11 @@ void PluginCatalogActivity::render(RenderLock&&) {
   if (state == State::ERROR || state == State::NO_TOKEN) {
     const bool canSignIn = state == State::NO_TOKEN && manifest.hasDeviceCode();
     if (state == State::NO_TOKEN) {
-      renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2,
+      renderer.drawCenteredText(UI_10_FONT_ID, centerY,
                                 canSignIn ? tr(STR_PLUGIN_SIGN_IN_HINT) : tr(STR_PLUGIN_NOT_SIGNED_IN));
     } else {
-      renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 20, tr(STR_ERROR_MSG));
-      renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 + 10, errorMessage.c_str());
+      renderer.drawCenteredText(UI_10_FONT_ID, centerY - lineHeight, tr(STR_ERROR_MSG), true, EpdFontFamily::BOLD);
+      renderer.drawCenteredText(UI_10_FONT_ID, centerY + m.verticalSpacing, errorMessage.c_str());
     }
     const char* confirmLabel = canSignIn ? tr(STR_PLUGIN_SIGN_IN) : tr(STR_RETRY);
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, "", "");
@@ -1230,17 +1258,34 @@ void PluginCatalogActivity::render(RenderLock&&) {
   }
 
   if (state == State::DOWNLOADING) {
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 40, tr(STR_DOWNLOADING));
-    auto title = renderer.truncatedText(UI_10_FONT_ID, statusMessage.c_str(), pageWidth - 40);
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 10, title.c_str());
-    if (downloadTotal > 0) {
-      GUI.drawProgressBar(renderer, Rect{50, pageHeight / 2 + 20, pageWidth - 100, 20}, downloadProgress,
-                          downloadTotal);
-    }
+    auto title = renderer.truncatedText(UI_10_FONT_ID, statusMessage.c_str(), pageWidth - m.contentSidePadding * 2);
+    renderer.drawCenteredText(UI_10_FONT_ID, centerY - lineHeight, tr(STR_DOWNLOADING));
+    renderer.drawCenteredText(UI_10_FONT_ID, centerY, title.c_str());
+    const int pct =
+        downloadTotal > 0 ? static_cast<int>(static_cast<uint64_t>(downloadProgress) * 100 / downloadTotal) : 0;
+    GUI.drawProgressBar(renderer,
+                        Rect{m.contentSidePadding, centerY + m.verticalSpacing + lineHeight,
+                             pageWidth - m.contentSidePadding * 2, m.progressBarHeight},
+                        pct, 100);
+    const auto labels = mappedInput.mapLabels("", "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     renderer.displayBuffer();
     return;
   }
 
+  if (state == State::DONE) {
+    auto title = renderer.truncatedText(UI_10_FONT_ID, statusMessage.c_str(), pageWidth - m.contentSidePadding * 2);
+    renderer.drawCenteredText(UI_10_FONT_ID, centerY - lineHeight, tr(STR_DOWNLOAD_COMPLETE), true,
+                              EpdFontFamily::BOLD);
+    renderer.drawCenteredText(UI_10_FONT_ID, centerY + m.verticalSpacing, title.c_str());
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    renderer.displayBuffer();
+    return;
+  }
+
+  // BROWSING
+  const CatLayout layout = catLayout(renderer);
   const bool onDir = manifest.isXmlList() && !items.empty() && items[selectorIndex].isDir;
   const char* confirmLabel = onDir ? tr(STR_OPEN) : tr(STR_DOWNLOAD);
   // XML lists page by folder navigation (Confirm/Back), not the API pager.
@@ -1249,18 +1294,12 @@ void PluginCatalogActivity::render(RenderLock&&) {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   if (items.empty()) {
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_NO_ENTRIES));
+    renderer.drawCenteredText(UI_10_FONT_ID, centerY, tr(STR_NO_ENTRIES));
   } else {
-    const int rows = visibleRows();
-    const int pageStart = selectorIndex / rows * rows;
-    renderer.fillRect(0, LIST_TOP + (selectorIndex % rows) * ROW_STEP - 2, pageWidth - 1, ROW_STEP);
-    for (size_t i = pageStart; i < items.size() && i < static_cast<size_t>(pageStart + rows); i++) {
-      std::string text = manifest.isXmlList() && items[i].isDir ? "> " + items[i].title : items[i].title;
-      if (!items[i].author.empty()) text += " - " + items[i].author;
-      auto line = renderer.truncatedText(UI_10_FONT_ID, text.c_str(), pageWidth - 40);
-      renderer.drawText(UI_10_FONT_ID, 20, LIST_TOP + static_cast<int>(i % rows) * ROW_STEP, line.c_str(),
-                        i != static_cast<size_t>(selectorIndex));
-    }
+    GUI.drawList(
+        renderer, layout.list, static_cast<int>(items.size()), selectorIndex,
+        [this](int i) { return manifest.isXmlList() && items[i].isDir ? "> " + items[i].title : items[i].title; },
+        [this](int i) { return items[i].author; });
   }
   renderer.displayBuffer();
 }
