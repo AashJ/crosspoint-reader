@@ -39,19 +39,38 @@ class PluginCatalogActivity final : public Activity {
 
  private:
   struct Manifest {
-    // {token} comes from tokenFile at tokenPath (dotted JSON path).
+    // {token} comes from tokenFile at tokenPath (dotted JSON path). {cfg.KEY}
+    // comes from a flat JSON config file (configFile), letting a plugin store
+    // user-entered values (e.g. a server URL and credentials) outside the
+    // manifest instead of hardcoding them.
     std::string tokenFile, tokenPath;
-    // Browse request: templates may use {token}, {page}, {limit}.
+    std::string configFile;
+    // "json" (default) parses a paged JSON list. "xml" walks a repeating XML
+    // element (a WebDAV multistatus, an OPDS/Atom feed, ...) with optional
+    // folder navigation — the format is data, so the firmware knows no protocol.
+    std::string browseFormat;
+    // Browse request: templates may use {token}, {cfg.KEY}, {page}, {limit}.
     std::string browseUrl, browseMethod, browseBody;
     std::vector<std::pair<std::string, std::string>> browseHeaders;
-    std::string itemsPath;  // dotted path to the item array; "" = response root
+    std::string itemsPath;  // JSON: dotted path to the item array; "" = response root
+    // JSON field paths (dotted); XML field selectors ("elem", "elem@attr", "@attr").
     std::string titlePath, authorPath, idPath, urlPath;
     int pageSize = 8;
+    // XML list options:
+    std::string xmlItem;                     // local-name of the repeating element (required)
+    std::string xmlContainer;                // local-name whose presence marks a navigable folder
+    bool xmlSkipSelf = false;                // drop the entry whose url equals the request url
+    bool xmlResolveUrls = false;             // resolve url field against the request origin
+    std::vector<std::string> xmlExtensions;  // allowed file extensions ("" = all)
+
+    bool isXmlList() const { return browseFormat == "xml"; }
     // Download: templates may additionally use {id}, {title}, {author}, {url}.
     // When dlUrlPath is empty, the substituted dlUrl IS the file URL;
     // otherwise a request is made and the file URL read from dlUrlPath.
     std::string dlUrl, dlMethod, dlBody, dlUrlPath;
     std::vector<std::pair<std::string, std::string>> dlHeaders;
+    // Optional HTTP Basic credentials for the file GET; templates.
+    std::string dlUser, dlPass;
     std::string destDir, filenameTpl;
     // Optional sidecar written after a successful download; templates may use
     // {id}, {title}, {md5} (MD5 of the destination path).
@@ -71,6 +90,7 @@ class PluginCatalogActivity final : public Activity {
 
   struct Item {
     std::string title, author, id, url;
+    bool isDir = false;  // a container/folder (navigable), not a downloadable file
   };
 
   std::string manifestPath;
@@ -80,8 +100,12 @@ class PluginCatalogActivity final : public Activity {
   State state = State::LOADING;
   std::vector<Item> items;
   std::string token;
+  std::vector<std::pair<std::string, std::string>> config;  // {cfg.KEY} values
   int page = 1;
   bool hasMore = false;
+  // XML-list folder navigation: current container URL and the trail back out.
+  std::string browseCurrentUrl;
+  std::vector<std::string> browseHistory;
   int selectorIndex = 0;
   bool consumeConfirm = false;
   std::string errorMessage;
@@ -96,10 +120,14 @@ class PluginCatalogActivity final : public Activity {
 
   bool loadManifest();
   bool loadToken();
+  void loadConfig();
   bool saveToken(const std::string& value);
   void checkAndConnectWifi();
   void launchWifiSelection();
   void fetchPage(int newPage);
+  void fetchXmlList();
+  void activateSelected();  // XML list: navigate into a folder, else download
+  int visibleRows() const;  // list rows that fit on screen at the current size
   void downloadItem(const Item& item);
   void beginAuth();
   void pollAuth();

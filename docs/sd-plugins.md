@@ -98,11 +98,21 @@ Every string field is a template. Available substitutions:
 | Variable | Meaning | Available in |
 |---|---|---|
 | `{token}` | contents of the token file at `token.path` | everywhere |
+| `{cfg.KEY}` | value of `KEY` in the flat JSON config file at `config.file` | everywhere |
 | `{page}` | current 1-based page | browse |
 | `{limit}` | `page_size + 1` (the extra row detects "more pages") | browse |
 | `{id}` `{title}` `{author}` `{url}` | fields of the selected item | download, sidecar |
 | `{md5}` | MD5 hex of the destination file path | sidecar |
 | `{device_code}` | from the auth request response | auth poll |
+
+Two browse formats:
+- **`"json"`** (default) — a paged JSON list, using `items`/`fields` below.
+- **`"xml"`** — walks a repeating XML element with optional folder navigation
+  (Confirm opens a folder, Back goes up). No paging; the JSON `items`/
+  `page_size` are ignored. The firmware knows no specific protocol: a WebDAV
+  `PROPFIND` multistatus, an OPDS/Atom feed, or any XML list is all manifest
+  config. XML field selectors are `"elem"` (child element text), `"elem@attr"`
+  (child element attribute), or `"@attr"` (attribute on the item element).
 
 ```jsonc
 {
@@ -113,19 +123,33 @@ Every string field is a template. Available substitutions:
     "path": "token"                         // dotted JSON path inside the file
   },
 
+  "config": {                               // optional: flat JSON of {cfg.KEY} values,
+    "file": "/.crosspoint/<name>-cfg.json"  // e.g. a user-entered server URL + credentials
+  },
+
   "browse": {                               // required
+    "format": "json",                       // or "xml"
     "url": "https://.../search",
     "method": "POST",                       // default GET
     "headers": { "Authorization": "Bearer {token}" },
     "body": "{\"page\":{page},\"per_page\":{limit}}",
+
+    // --- json format ---
     "items": "",                            // dotted path to the item array; "" = response root
-    "fields": {                             // dotted paths, numeric = array index
+    "fields": {                             // json: dotted paths (numeric = array index)
       "title": "title",                     // required (items without one are dropped)
       "author": "authors.0.name",
       "id": "id",
       "url": "download_url"                 // when the item carries a direct file URL
     },
-    "page_size": 8                          // 1..16; response should honor {limit}
+    "page_size": 8,                         // 1..16; response should honor {limit}
+
+    // --- xml format (ignore the json fields above; fields become selectors) ---
+    "item": "response",                     // local-name of the repeating element
+    "container_element": "collection",      // presence marks a navigable folder (omit = flat)
+    "skip_self": true,                      // drop the entry equal to the request URL
+    "resolve_urls": true,                   // resolve url field against the request origin
+    "extensions": [".epub", ".pdf"]         // allowed file extensions (omit = all)
   },
 
   "download": {
@@ -135,6 +159,8 @@ Every string field is a template. Available substitutions:
     "body": "{}",
     "url_path": "url",                      // response field with the file URL;
                                             // omit to treat "url" itself as the file URL
+    "username": "{cfg.user}",              // optional HTTP Basic creds for the file GET
+    "password": "{cfg.pass}",             // (webdav); omit for token/header auth
     "dest_dir": "/ServiceName",             // created if missing; falls back to SD root
     "filename": "{title}.epub",             // {title} is filesystem-sanitized here
     "sidecar": {                            // optional per-book metadata file
@@ -167,9 +193,14 @@ Every string field is a template. Available substitutions:
   plugin instead.
 - **Stale tokens**: a 401/403 from browse returns to the sign-in screen rather
   than an error.
-- **Pagination**: the browse request should return up to `{limit}` items; the
-  firmware displays `page_size` and uses the extra row to know another page
-  exists. The page key cycles forward and wraps to page 1.
+- **Pagination** (json): the browse request should return up to `{limit}`
+  items; the firmware displays `page_size` and uses the extra row to know
+  another page exists. The page key cycles forward and wraps to page 1.
+- **XML navigation**: Confirm on a folder (an item carrying `container_element`)
+  descends into it, Back climbs out (Back at the root leaves the screen).
+  With `resolve_urls`, server-relative URLs resolve against the browse URL's
+  origin. A `config.file` lets values like a server URL and credentials be
+  user-entered (via a browser `plugin.js`) rather than baked into the manifest.
 - **After download**: the book's layout cache is invalidated and the optional
   sidecar is written (e.g. a service book id keyed by path MD5, for a future
   progress-sync stage).
@@ -183,6 +214,9 @@ Every string field is a template. Available substitutions:
   service's items are tiny.
 - The book download streams to SD via `HttpDownloader`; file size is
   unconstrained.
+- An XML list response is held in RAM whole under the same 48KB cap, so a
+  single folder/feed should hold at most a few hundred entries; the engine
+  also stops after 200 entries. Split very large libraries into subfolders.
 
 ### Testing a new manifest
 
