@@ -24,11 +24,14 @@ class PluginInfoActivity final : public Activity {
  private:
   PluginRef plugin;
   ButtonNavigator buttonNavigator;
-  std::vector<std::string> lines;  // README wrapped to the screen width
+  std::vector<std::string> paragraphs;  // raw text lines (description + README), unwrapped
+  std::vector<std::string> lines;       // paragraphs wrapped to wrappedWidth
+  int wrappedWidth = -1;                // width `lines` was wrapped at; -1 = not yet wrapped
   int topLine = 0;
   bool subscreenOpen = false;
 
   void openCatalog();
   int visibleLines() const;
-  void wrapReadme();
+  void loadParagraphs();  // read raw text (no measuring) — safe in onEnter
+  void ensureWrapped();   // wrap paragraphs at the current width — call in render
 };

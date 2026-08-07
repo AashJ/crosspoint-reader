@@ -9,11 +9,15 @@
 #include "fontIds.h"
 
 namespace {
-constexpr int HEADER_X = 16;
-constexpr int HEADER_Y = 15;
-constexpr int BODY_TOP = 46;
 constexpr int LINE_STEP = 22;
 constexpr size_t MAX_README_SIZE = 24 * 1024;
+
+// Body geometry from the active theme, so margins line up with list rows.
+int contentX() { return UITheme::getInstance().getMetrics().contentSidePadding; }
+int bodyTop() {
+  const auto& m = UITheme::getInstance().getMetrics();
+  return m.topPadding + m.headerHeight + m.verticalSpacing;
+}
 
 // A very light markdown flattener for e-ink: drops heading/list/emphasis
 // markers and code fences, leaving readable plain text. No renderer needed.
@@ -38,34 +42,67 @@ void PluginInfoActivity::onEnter() {
   Activity::onEnter();
   topLine = 0;
   subscreenOpen = false;
-  wrapReadme();
+  wrappedWidth = -1;
+  loadParagraphs();
   requestUpdate();
 }
 
 int PluginInfoActivity::visibleLines() const {
-  const int avail = renderer.getScreenHeight() - BODY_TOP - UITheme::getInstance().getMetrics().buttonHintsHeight;
+  const int avail = renderer.getScreenHeight() - bodyTop() - UITheme::getInstance().getMetrics().buttonHintsHeight;
   const int n = avail / LINE_STEP;
   return n < 1 ? 1 : n;
 }
 
-void PluginInfoActivity::wrapReadme() {
+// Read raw text into `paragraphs` without any measurement — safe to run in
+// onEnter (fonts/orientation may not be settled until the render task runs).
+void PluginInfoActivity::loadParagraphs() {
+  paragraphs.clear();
+  if (!plugin.description.empty()) {
+    paragraphs.push_back(plugin.description);
+    paragraphs.emplace_back("");
+  }
+  if (plugin.readmePath.empty()) {
+    if (!plugin.hasCatalog) paragraphs.emplace_back(tr(STR_PLUGIN_WEB_ONLY));
+    return;
+  }
+  HalFile file;
+  if (!Storage.openFileForRead("PINFO", plugin.readmePath, file)) return;
+  const size_t size = file.fileSize();
+  if (size == 0 || size > MAX_README_SIZE) return;
+  std::string raw;
+  raw.resize(size);
+  if (file.read(raw.data(), size) != static_cast<int>(size)) return;
+
+  size_t pos = 0;
+  while (pos <= raw.size()) {
+    size_t nl = raw.find('\n', pos);
+    std::string line = raw.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.rfind("```", 0) != 0) paragraphs.push_back(line);  // drop code-fence markers
+    if (nl == std::string::npos) break;
+    pos = nl + 1;
+  }
+}
+
+// Word-wrap `paragraphs` into `lines` at the current content width. Run from
+// render(), where the width and font metrics are final.
+void PluginInfoActivity::ensureWrapped() {
+  const int wrapWidth = renderer.getScreenWidth() - contentX() * 2;
+  if (wrappedWidth == wrapWidth) return;  // already wrapped for this width
+  wrappedWidth = wrapWidth;
   lines.clear();
-  // Lead with the description, then a blank line, then the README.
-  const int wrapWidth = renderer.getScreenWidth() - HEADER_X * 2;
-  auto pushWrapped = [&](const std::string& raw) {
+  for (const std::string& raw : paragraphs) {
     std::string text = stripMarkdown(raw);
     if (text.empty()) {
       lines.emplace_back("");
-      return;
+      continue;
     }
-    // Greedy word wrap against the measured pixel width.
     std::string cur;
     size_t i = 0;
     while (i < text.size()) {
       size_t sp = text.find(' ', i);
       std::string word = text.substr(i, sp == std::string::npos ? std::string::npos : sp - i);
-      // Hard-break a single word wider than the line (e.g. a long URL), which
-      // greedy word-wrap alone would let run off the edge.
+      // Hard-break a single word wider than the line (e.g. a long URL).
       while (renderer.getTextWidth(UI_10_FONT_ID, word.c_str()) > wrapWidth && word.size() > 1) {
         size_t cut = word.size();
         while (cut > 1 && renderer.getTextWidth(UI_10_FONT_ID, word.substr(0, cut).c_str()) > wrapWidth) cut--;
@@ -87,36 +124,6 @@ void PluginInfoActivity::wrapReadme() {
       i = sp + 1;
     }
     lines.push_back(cur);
-  };
-
-  if (!plugin.description.empty()) {
-    pushWrapped(plugin.description);
-    lines.emplace_back("");
-  }
-
-  if (plugin.readmePath.empty()) {
-    if (!plugin.hasCatalog) lines.emplace_back(tr(STR_PLUGIN_WEB_ONLY));
-    return;
-  }
-  HalFile file;
-  if (!Storage.openFileForRead("PINFO", plugin.readmePath, file)) return;
-  const size_t size = file.fileSize();
-  if (size == 0 || size > MAX_README_SIZE) return;
-  std::string raw;
-  raw.resize(size);
-  if (file.read(raw.data(), size) != static_cast<int>(size)) return;
-
-  size_t pos = 0;
-  while (pos <= raw.size()) {
-    size_t nl = raw.find('\n', pos);
-    std::string line = raw.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos);
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (line.rfind("```", 0) == 0) {  // drop code-fence markers, keep contents
-    } else {
-      pushWrapped(line);
-    }
-    if (nl == std::string::npos) break;
-    pos = nl + 1;
   }
 }
 
@@ -163,20 +170,28 @@ void PluginInfoActivity::loop() {
 
 void PluginInfoActivity::render(RenderLock&&) {
   renderer.clearScreen();
-  const auto pageWidth = renderer.getScreenWidth();
+  ensureWrapped();  // wrap now that width + fonts are final
+  const int pageWidth = renderer.getScreenWidth();
+  const auto& m = UITheme::getInstance().getMetrics();
 
-  const auto header = renderer.truncatedText(UI_12_FONT_ID, plugin.title.c_str(), pageWidth - HEADER_X * 2);
-  renderer.drawText(UI_12_FONT_ID, HEADER_X, HEADER_Y, header.c_str(), true, EpdFontFamily::BOLD);
+  GUI.drawHeader(renderer, Rect{0, m.topPadding, pageWidth, m.headerHeight}, plugin.title.c_str());
 
   const char* confirmLabel = plugin.hasCatalog ? tr(STR_OPEN) : "";
   const int rows = visibleLines();
-  const bool more = topLine + rows < static_cast<int>(lines.size());
-  const char* scrollLabel = (more || topLine > 0) ? tr(STR_NEXT_PAGE) : "";
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, scrollLabel, "");
+  const bool canScroll = static_cast<int>(lines.size()) > rows;
+  const char* up = canScroll ? tr(STR_DIR_UP) : "";
+  const char* down = canScroll ? tr(STR_DIR_DOWN) : "";
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, up, down);
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
+  const int x = contentX();
+  const int top = bodyTop();
+  const int maxWidth = pageWidth - x * 2;
   for (int i = 0; i < rows && topLine + i < static_cast<int>(lines.size()); i++) {
-    renderer.drawText(UI_10_FONT_ID, HEADER_X, BODY_TOP + i * LINE_STEP, lines[topLine + i].c_str(), true);
+    // truncatedText is the same overflow guard drawList uses — a line can never
+    // run past the content width even if wrapping missed an edge case.
+    auto line = renderer.truncatedText(UI_10_FONT_ID, lines[topLine + i].c_str(), maxWidth);
+    renderer.drawText(UI_10_FONT_ID, x, top + i * LINE_STEP, line.c_str(), true);
   }
   renderer.displayBuffer();
 }

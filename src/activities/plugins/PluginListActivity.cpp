@@ -9,11 +9,27 @@
 #include "fontIds.h"
 
 namespace {
-constexpr int HEADER_Y = 15;
-constexpr int HEADER_X = 16;
-constexpr int LIST_TOP = 60;
-constexpr int ROW_STEP = 44;  // two lines per row: title + description
-constexpr int PAGE_ITEMS = 9;
+// Geometry from the active theme, so the list matches every other screen.
+struct ListLayout {
+  Rect header;
+  Rect list;
+  int rowStep;
+  int pageItems;
+};
+ListLayout layoutFor(const GfxRenderer& renderer) {
+  const auto& m = UITheme::getInstance().getMetrics();
+  const int w = renderer.getScreenWidth();
+  const int listTop = m.topPadding + m.headerHeight + m.verticalSpacing;
+  const int listHeight =
+      renderer.getScreenHeight() - (m.topPadding + m.headerHeight + m.buttonHintsHeight + m.verticalSpacing * 2);
+  ListLayout l;
+  l.header = Rect{0, m.topPadding, w, m.headerHeight};
+  l.list = Rect{0, listTop, w, listHeight};
+  l.rowStep = GUI.getListRowStep(/*hasSubtitle=*/true);
+  l.pageItems = GUI.getListPageItems(listHeight, /*hasSubtitle=*/true);
+  if (l.pageItems < 1) l.pageItems = 1;
+  return l;
+}
 }  // namespace
 
 void PluginListActivity::onEnter() {
@@ -21,41 +37,52 @@ void PluginListActivity::onEnter() {
   plugins = discoverPlugins();
   selectorIndex = 0;
   subscreenOpen = false;
-  // The Confirm press that launched us from the Settings menu releases inside
-  // this activity; swallow it so it doesn't instantly open the first plugin.
-  consumeConfirm = true;
+  confirmArmed = false;  // wait for a press that starts inside this screen
   requestUpdate();
 }
 
+void PluginListActivity::goBack() {
+  // Home launch replaced the home screen (root); Settings launch pushed us.
+  if (rootMode) {
+    onGoHome();
+  } else {
+    finish();
+  }
+}
+
 void PluginListActivity::openSelected() {
-  if (plugins.empty()) return;
+  if (isOpdsRow(selectorIndex)) {
+    activityManager.goToBrowser();  // replaces this screen with the OPDS browser
+    return;
+  }
+  const int pi = pluginIndex(selectorIndex);
+  if (pi < 0 || pi >= static_cast<int>(plugins.size())) return;
   subscreenOpen = true;
-  startActivityForResult(std::make_unique<PluginInfoActivity>(renderer, mappedInput, plugins[selectorIndex]),
+  startActivityForResult(std::make_unique<PluginInfoActivity>(renderer, mappedInput, plugins[pi]),
                          [this](const ActivityResult&) { subscreenOpen = false; });
 }
 
 void PluginListActivity::loop() {
   if (subscreenOpen) return;
 
-  if (consumeConfirm && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    consumeConfirm = false;
-    return;
-  }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) confirmArmed = true;
+  if (confirmArmed && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    confirmArmed = false;
     openSelected();
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    finish();
+    goBack();
     return;
   }
 
-  if (!plugins.empty()) {
+  if (itemCount() > 0) {
+    const ListLayout l = layoutFor(renderer);
     int row = -1;
-    const auto touch = mappedInput.rowTouch(row, LIST_TOP, ROW_STEP, PAGE_ITEMS);
+    const auto touch = mappedInput.rowTouch(row, l.list.y, l.rowStep, l.pageItems);
     if (touch != MappedInputManager::RowTouch::None) {
-      const int touched = selectorIndex / PAGE_ITEMS * PAGE_ITEMS + row;
-      if (touched >= 0 && touched < static_cast<int>(plugins.size())) {
+      const int touched = selectorIndex / l.pageItems * l.pageItems + row;
+      if (touched >= 0 && touched < itemCount()) {
         if (touch == MappedInputManager::RowTouch::Down) {
           if (selectorIndex != touched) {
             selectorIndex = touched;
@@ -70,11 +97,11 @@ void PluginListActivity::loop() {
     }
 
     buttonNavigator.onNextRelease([this] {
-      selectorIndex = ButtonNavigator::nextIndex(selectorIndex, plugins.size());
+      selectorIndex = ButtonNavigator::nextIndex(selectorIndex, itemCount());
       requestUpdate();
     });
     buttonNavigator.onPreviousRelease([this] {
-      selectorIndex = ButtonNavigator::previousIndex(selectorIndex, plugins.size());
+      selectorIndex = ButtonNavigator::previousIndex(selectorIndex, itemCount());
       requestUpdate();
     });
   }
@@ -82,30 +109,27 @@ void PluginListActivity::loop() {
 
 void PluginListActivity::render(RenderLock&&) {
   renderer.clearScreen();
-  const auto pageWidth = renderer.getScreenWidth();
-  const auto pageHeight = renderer.getScreenHeight();
+  const int pageWidth = renderer.getScreenWidth();
+  const auto& m = UITheme::getInstance().getMetrics();
 
-  renderer.drawText(UI_12_FONT_ID, HEADER_X, HEADER_Y, tr(STR_PLUGINS), true, EpdFontFamily::BOLD);
+  GUI.drawHeader(renderer, Rect{0, m.topPadding, pageWidth, m.headerHeight}, tr(STR_PLUGINS));
 
-  const char* confirmLabel = plugins.empty() ? "" : tr(STR_OPEN);
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, "", "");
+  const char* confirmLabel = itemCount() == 0 ? "" : tr(STR_OPEN);
+  const char* up = itemCount() > 1 ? tr(STR_DIR_UP) : "";
+  const char* down = itemCount() > 1 ? tr(STR_DIR_DOWN) : "";
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, up, down);
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  if (plugins.empty()) {
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_NO_PLUGINS_INSTALLED));
+  if (itemCount() == 0) {
+    renderer.drawCenteredText(UI_10_FONT_ID, renderer.getScreenHeight() / 2, tr(STR_NO_PLUGINS_INSTALLED));
   } else {
-    const int pageStart = selectorIndex / PAGE_ITEMS * PAGE_ITEMS;
-    renderer.fillRect(0, LIST_TOP + (selectorIndex % PAGE_ITEMS) * ROW_STEP - 2, pageWidth - 1, ROW_STEP);
-    for (size_t i = pageStart; i < plugins.size() && i < static_cast<size_t>(pageStart + PAGE_ITEMS); i++) {
-      const int y = LIST_TOP + static_cast<int>(i % PAGE_ITEMS) * ROW_STEP;
-      const bool black = i != static_cast<size_t>(selectorIndex);
-      auto title = renderer.truncatedText(UI_12_FONT_ID, plugins[i].title.c_str(), pageWidth - 40);
-      renderer.drawText(UI_12_FONT_ID, 20, y, title.c_str(), black);
-      if (!plugins[i].description.empty()) {
-        auto desc = renderer.truncatedText(UI_10_FONT_ID, plugins[i].description.c_str(), pageWidth - 40);
-        renderer.drawText(UI_10_FONT_ID, 20, y + 20, desc.c_str(), black);
-      }
-    }
+    const ListLayout l = layoutFor(renderer);
+    GUI.drawList(
+        renderer, l.list, itemCount(), selectorIndex,
+        [this](int i) { return isOpdsRow(i) ? std::string(tr(STR_OPDS_BROWSER)) : plugins[pluginIndex(i)].title; },
+        [this](int i) {
+          return isOpdsRow(i) ? std::string(tr(STR_OPDS_SERVERS)) : plugins[pluginIndex(i)].description;
+        });
   }
   renderer.displayBuffer();
 }

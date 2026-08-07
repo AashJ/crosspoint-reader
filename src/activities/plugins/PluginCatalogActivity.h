@@ -20,6 +20,10 @@ struct PluginRef {
 // the list opens), so nothing stays resident while it is closed.
 std::vector<PluginRef> discoverPlugins();
 
+// Cheap check for the home screen: true if any plugin folder exists (a folder
+// under a plugin root holding plugin.js or device.json). Reads no manifests.
+bool anyPluginInstalled();
+
 /**
  * Generic on-device catalog browser driven by an SD plugin's device.json.
  * The manifest is pure data (URL/header/body templates plus JSON field

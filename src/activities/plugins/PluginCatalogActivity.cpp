@@ -392,6 +392,21 @@ std::vector<PluginRef> discoverPlugins() {
   return plugins;
 }
 
+bool anyPluginInstalled() {
+  for (size_t r = 0; r < PluginLocations::kRootCount; r++) {
+    HalFile root = Storage.open(PluginLocations::kRoots[r]);
+    if (!root || !root.isDirectory()) continue;
+    for (HalFile entry = root.openNextFile(); entry; entry = root.openNextFile()) {
+      if (!entry.isDirectory()) continue;
+      char name[64];
+      if (entry.getName(name, sizeof(name)) == 0 || name[0] == '.') continue;
+      const std::string dir = std::string(PluginLocations::kRoots[r]) + "/" + name;
+      if (Storage.exists((dir + "/plugin.js").c_str()) || Storage.exists((dir + "/device.json").c_str())) return true;
+    }
+  }
+  return false;
+}
+
 bool PluginCatalogActivity::loadManifest() {
   std::string raw;
   if (!readSmallFile(manifestPath, MAX_MANIFEST_SIZE, raw)) return false;
@@ -538,6 +553,22 @@ int PluginCatalogActivity::apiRequest(const std::string& url, const std::string&
                                         if (out.size() + len > MAX_API_RESPONSE) {
                                           overflow = true;
                                           return false;
+                                        }
+                                        // Grow the buffer only as needed, and only when a nothrow probe proves
+                                        // the larger block is available. A bare string reallocation would abort
+                                        // the device on low heap when a response is large (e.g. an API that
+                                        // inlines article HTML); here we just stop and fail the request.
+                                        if (out.size() + len > out.capacity()) {
+                                          size_t want = out.capacity() ? out.capacity() * 2 : 2048;
+                                          if (want < out.size() + len) want = out.size() + len;
+                                          if (want > MAX_API_RESPONSE) want = MAX_API_RESPONSE;
+                                          void* probe = malloc(want + 256);
+                                          if (!probe) {
+                                            overflow = true;
+                                            return false;
+                                          }
+                                          free(probe);
+                                          out.reserve(want);
                                         }
                                         out.append(reinterpret_cast<const char*>(data), len);
                                         return true;
