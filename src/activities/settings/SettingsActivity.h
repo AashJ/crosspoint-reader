@@ -25,6 +25,7 @@ enum class SettingAction {
   Language,
   DownloadFonts,
   TextSettings,
+  Plugins,
 };
 
 struct SettingInfo {

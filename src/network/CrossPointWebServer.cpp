@@ -2191,7 +2191,7 @@ void CrossPointWebServer::handleFetch() {
   // transport drop, a server stall, or a wolfSSL mid-record OOM (measured: at
   // ~20KB free heap the 16KB-record receive buffer fails to allocate). Instead
   // of abandoning the download, resume from the received byte count with a
-  // Range request on a fresh connection — fulfillment CDNs serve static files
+  // Range request on a fresh connection — book-delivery CDNs serve static files
   // and honor ranges. A server that ignores the Range (200 instead of 206)
   // restarts the body, so the file is rewound before its first chunk lands.
   const bool restoreWatchdog = pauseWebTaskWatchdog();
@@ -2253,7 +2253,7 @@ void CrossPointWebServer::handleFetch() {
     // fails (wolfSSL -188); skip it like HttpDownloader does. Traffic stays
     // TLS-encrypted, just unauthenticated — matching the prior library-lending flow.
     http.setInsecure();
-    // Fulfillment servers assemble books on the fly and can stall mid-body
+    // Some delivery servers assemble books on the fly and can stall mid-body
     // while packaging; the default 15s no-data timeout truncates those downloads.
     http.setTimeout(60000);
     if (!http.begin(url)) {
