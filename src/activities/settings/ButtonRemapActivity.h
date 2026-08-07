@@ -1,14 +1,20 @@
 #pragma once
 
+#include <array>
 #include <functional>
 #include <string>
 
+#include "CrossPointSettings.h"
 #include "activities/Activity.h"
 
 class ButtonRemapActivity final : public Activity {
  public:
-  explicit ButtonRemapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-      : Activity("ButtonRemap", renderer, mappedInput) {}
+  // Which of the two front-button mappings this run edits: the system-wide one, or the
+  // reader-only override that shadows it while a book is open.
+  enum class Target : uint8_t { System, Reader };
+
+  explicit ButtonRemapActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, Target target = Target::System)
+      : Activity("ButtonRemap", renderer, mappedInput), target(target) {}
 
   void onEnter() override;
   void onExit() override;
@@ -18,6 +24,9 @@ class ButtonRemapActivity final : public Activity {
  private:
   // Rendering task state.
 
+  Target target;
+  // The four role fields this run writes, in Back/Confirm/Left/Right order.
+  std::array<uint8_t CrossPointSettings::*, 4> targetFields() const;
   // Index of the logical role currently awaiting input.
   uint8_t currentStep = 0;
   // Temporary mapping from logical role -> hardware button index.

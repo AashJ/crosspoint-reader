@@ -50,53 +50,104 @@ MappedInputManager::Button MappedInputManager::mapScreenDirection(const Button b
   return directions[orientation][direction];
 }
 
+bool MappedInputManager::isSideDirectionSwapped() const {
+  // Keyed on the live renderer orientation for the same reason as isNavDirectionSwapped(): the
+  // reader and its modal menus render rotated, portrait UI does not.
+  return SETTINGS.sideButtonOrientationAware && renderer.getOrientation() != GfxRenderer::Portrait;
+}
+
+namespace {
+
+// The four front buttons sit in one row, so turning the device over reverses their order.
+uint8_t mirrorFrontButton(const uint8_t hardwareButton) {
+  return hardwareButton < CrossPointSettings::FRONT_BUTTON_HARDWARE_COUNT
+             ? static_cast<uint8_t>(CrossPointSettings::FRONT_BUTTON_HARDWARE_COUNT - 1 - hardwareButton)
+             : hardwareButton;
+}
+
+uint8_t mirrorSideButton(const uint8_t hardwareButton) {
+  if (hardwareButton == HalGPIO::BTN_UP) return HalGPIO::BTN_DOWN;
+  if (hardwareButton == HalGPIO::BTN_DOWN) return HalGPIO::BTN_UP;
+  return hardwareButton;
+}
+
+// Side buttons bound to each SIDE_BUTTON_LAYOUT. NO_BUTTON means that direction has no side
+// button; NEXT_NEXT is the one layout that binds two buttons to a single direction.
+constexpr uint8_t NO_BUTTON = 0xFF;
+struct SideLayout {
+  uint8_t pageBack;
+  uint8_t pageForward;
+  uint8_t pageForwardSecondary;
+};
+constexpr SideLayout SIDE_LAYOUTS[CrossPointSettings::SIDE_BUTTON_LAYOUT_COUNT] = {
+    {HalGPIO::BTN_UP, HalGPIO::BTN_DOWN, NO_BUTTON},  // PREV_NEXT
+    {HalGPIO::BTN_DOWN, HalGPIO::BTN_UP, NO_BUTTON},  // NEXT_PREV
+    {NO_BUTTON, NO_BUTTON, NO_BUTTON},                // SIDE_BUTTONS_DISABLED
+    {NO_BUTTON, HalGPIO::BTN_UP, HalGPIO::BTN_DOWN},  // NEXT_NEXT
+};
+
+}  // namespace
+
+int MappedInputManager::getFrontButtonFor(const Button button) const {
+  // A reader-only remap only applies inside a reader; everything else keeps the system mapping.
+  const bool useReaderMapping = readerMode && SETTINGS.readerFrontButtonsEnabled;
+  // ALL_BUTTONS keeps every front role under the same physical finger when the screen renders
+  // inverted. Only Back/Confirm are mirrored here — isNavDirectionSwapped() already flips the
+  // navigation pair, and mirroring those as well would cancel it out.
+  const bool mirror = SETTINGS.frontButtonOrientationAware == CrossPointSettings::FRONT_ORIENTATION_AWARE_ALL_BUTTONS &&
+                      renderer.getOrientation() == GfxRenderer::PortraitInverted;
+
+  switch (button) {
+    case Button::Back: {
+      const uint8_t hw = useReaderMapping ? SETTINGS.readerFrontButtonBack : SETTINGS.frontButtonBack;
+      return mirror ? mirrorFrontButton(hw) : hw;
+    }
+    case Button::Confirm: {
+      const uint8_t hw = useReaderMapping ? SETTINGS.readerFrontButtonConfirm : SETTINGS.frontButtonConfirm;
+      return mirror ? mirrorFrontButton(hw) : hw;
+    }
+    case Button::Left:
+      return useReaderMapping ? SETTINGS.readerFrontButtonLeft : SETTINGS.frontButtonLeft;
+    case Button::Right:
+      return useReaderMapping ? SETTINGS.readerFrontButtonRight : SETTINGS.frontButtonRight;
+    default:
+      return -1;
+  }
+}
+
 bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint8_t) const) const {
-  const auto sideLayout = SETTINGS.sideButtonLayout;
+  const uint8_t sideLayout = SETTINGS.sideButtonLayout < CrossPointSettings::SIDE_BUTTON_LAYOUT_COUNT
+                                 ? SETTINGS.sideButtonLayout
+                                 : CrossPointSettings::PREV_NEXT;
+  const SideLayout side = SIDE_LAYOUTS[sideLayout];
+  const bool swapSides = isSideDirectionSwapped();
+  // Swapping the pair is the same as swapping the two roles, and leaves NEXT_NEXT (which binds
+  // both buttons to the same direction) untouched.
+  const auto readSide = [&](const uint8_t primary, const uint8_t secondary) {
+    return (primary != NO_BUTTON && (gpio.*fn)(swapSides ? mirrorSideButton(primary) : primary)) ||
+           (secondary != NO_BUTTON && (gpio.*fn)(swapSides ? mirrorSideButton(secondary) : secondary));
+  };
 
   switch (button) {
     case Button::Back:
-      // Logical Back maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonBack);
     case Button::Confirm:
-      // Logical Confirm maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonConfirm);
     case Button::Left:
-      // Logical Left maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonLeft);
-    case Button::Right:
-      // Logical Right maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonRight);
+    case Button::Right: {
+      const int hw = getFrontButtonFor(button);
+      return hw >= 0 && (gpio.*fn)(static_cast<uint8_t>(hw));
+    }
     case Button::Up:
-      // Side buttons remain fixed for Up/Down.
-      return (gpio.*fn)(HalGPIO::BTN_UP);
+      // Reader menus follow the same top/bottom side-button orientation as reader page turns.
+      return (gpio.*fn)(swapSides ? HalGPIO::BTN_DOWN : HalGPIO::BTN_UP);
     case Button::Down:
-      // Side buttons remain fixed for Up/Down.
-      return (gpio.*fn)(HalGPIO::BTN_DOWN);
+      return (gpio.*fn)(swapSides ? HalGPIO::BTN_UP : HalGPIO::BTN_DOWN);
     case Button::Power:
       // Power button bypasses remapping.
       return (gpio.*fn)(HalGPIO::BTN_POWER);
     case Button::PageBack:
-      // Reader page navigation uses side buttons and can be swapped via settings.
-      switch (sideLayout) {
-        case CrossPointSettings::PREV_NEXT:
-          return (gpio.*fn)(HalGPIO::BTN_UP);
-        case CrossPointSettings::NEXT_PREV:
-          return (gpio.*fn)(HalGPIO::BTN_DOWN);
-        case CrossPointSettings::SIDE_BUTTONS_DISABLED:
-        default:
-          return false;
-      }
+      return readSide(side.pageBack, NO_BUTTON);
     case Button::PageForward:
-      // Reader page navigation uses side buttons and can be swapped via settings.
-      switch (sideLayout) {
-        case CrossPointSettings::PREV_NEXT:
-          return (gpio.*fn)(HalGPIO::BTN_DOWN);
-        case CrossPointSettings::NEXT_PREV:
-          return (gpio.*fn)(HalGPIO::BTN_UP);
-        case CrossPointSettings::SIDE_BUTTONS_DISABLED:
-        default:
-          return false;
-      }
+      return readSide(side.pageForward, side.pageForwardSecondary);
     case Button::NavNext:
       // Logical "next item" navigation: side Down + front Right, with the control axis flipped in
       // INVERTED / LANDSCAPE_CCW (frontButtonOrientationAware) so it matches the rotated hint labels.
@@ -360,19 +411,19 @@ MappedInputManager::Labels MappedInputManager::mapDirectionalLabels(const char* 
 
 MappedInputManager::Labels MappedInputManager::mapFrontLabels(const char* back, const char* confirm, const char* left,
                                                               const char* right) const {
-  // Build the label order based on the configured hardware mapping.
-  auto labelForHardware = [&](uint8_t hw) -> const char* {
-    // Compare against configured logical roles and return the matching label.
-    if (hw == SETTINGS.frontButtonBack) {
+  // Build the label order from the same resolved mapping mapButton() reads, so a reader-only
+  // remap or an inverted-screen mirror moves the hints along with the buttons.
+  auto labelForHardware = [&](int hw) -> const char* {
+    if (hw == getFrontButtonFor(Button::Back)) {
       return back;
     }
-    if (hw == SETTINGS.frontButtonConfirm) {
+    if (hw == getFrontButtonFor(Button::Confirm)) {
       return confirm;
     }
-    if (hw == SETTINGS.frontButtonLeft) {
+    if (hw == getFrontButtonFor(Button::Left)) {
       return left;
     }
-    if (hw == SETTINGS.frontButtonRight) {
+    if (hw == getFrontButtonFor(Button::Right)) {
       return right;
     }
     return "";

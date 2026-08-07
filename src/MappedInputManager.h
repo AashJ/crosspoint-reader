@@ -34,6 +34,11 @@ class MappedInputManager {
 
   MappedInputManager(HalGPIO& gpio, const GfxRenderer& renderer) : gpio(gpio), renderer(renderer) {}
 
+  // Reader activities can override the front-button mapping and swap the side buttons, neither of
+  // which is derivable from the renderer (a portrait reader renders exactly like portrait UI).
+  // main.cpp keeps this in sync with ActivityManager::isReaderActivity().
+  void setReaderMode(bool enabled) { readerMode = enabled; }
+
   void update() const { gpio.update(); }
   bool wasPressed(Button button) const;
   bool wasReleased(Button button) const;
@@ -81,8 +86,17 @@ class MappedInputManager {
   // so portrait UI (home, settings) never swaps while the reader and its menus do.
   [[nodiscard]] bool isNavDirectionSwapped() const;
 
+  // True when the reader's side buttons are inverted top-for-bottom, because the user opted into
+  // orientation-aware side buttons and the screen is currently rendered non-portrait.
+  [[nodiscard]] bool isSideDirectionSwapped() const;
+
+  // Physical front button backing a logical front role, after the reader-only remap and the
+  // orientation mirror. Only Back/Confirm/Left/Right are front roles; anything else returns -1.
+  [[nodiscard]] int getFrontButtonFor(Button button) const;
+
  private:
   HalGPIO& gpio;
+  bool readerMode = false;
   // Logical-to-physical button mapping depends on what the user is actually looking at: when the
   // screen is rendered rotated, the directional buttons must flip to match. The renderer is the only
   // authority on the *live* orientation (the reader rotates it and restores portrait on exit), so we

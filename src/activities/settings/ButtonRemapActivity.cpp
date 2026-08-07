@@ -47,10 +47,11 @@ void ButtonRemapActivity::loop() {
   // - Down: cancel without saving.
   if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
     // Persist default mapping immediately so the user can recover quickly.
-    SETTINGS.frontButtonBack = CrossPointSettings::FRONT_HW_BACK;
-    SETTINGS.frontButtonConfirm = CrossPointSettings::FRONT_HW_CONFIRM;
-    SETTINGS.frontButtonLeft = CrossPointSettings::FRONT_HW_LEFT;
-    SETTINGS.frontButtonRight = CrossPointSettings::FRONT_HW_RIGHT;
+    const auto fields = targetFields();
+    SETTINGS.*fields[0] = CrossPointSettings::FRONT_HW_BACK;
+    SETTINGS.*fields[1] = CrossPointSettings::FRONT_HW_CONFIRM;
+    SETTINGS.*fields[2] = CrossPointSettings::FRONT_HW_LEFT;
+    SETTINGS.*fields[3] = CrossPointSettings::FRONT_HW_RIGHT;
     SETTINGS.saveToFile();
     finish();
     return;
@@ -149,12 +150,21 @@ void ButtonRemapActivity::render(RenderLock&&) {
   renderer.displayBuffer();
 }
 
+std::array<uint8_t CrossPointSettings::*, 4> ButtonRemapActivity::targetFields() const {
+  if (target == Target::Reader) {
+    return {&CrossPointSettings::readerFrontButtonBack, &CrossPointSettings::readerFrontButtonConfirm,
+            &CrossPointSettings::readerFrontButtonLeft, &CrossPointSettings::readerFrontButtonRight};
+  }
+  return {&CrossPointSettings::frontButtonBack, &CrossPointSettings::frontButtonConfirm,
+          &CrossPointSettings::frontButtonLeft, &CrossPointSettings::frontButtonRight};
+}
+
 void ButtonRemapActivity::applyTempMapping() {
   // Commit temporary mapping into settings (logical role -> hardware).
-  SETTINGS.frontButtonBack = tempMapping[0];
-  SETTINGS.frontButtonConfirm = tempMapping[1];
-  SETTINGS.frontButtonLeft = tempMapping[2];
-  SETTINGS.frontButtonRight = tempMapping[3];
+  const auto fields = targetFields();
+  for (uint8_t i = 0; i < kRoleCount; i++) {
+    SETTINGS.*fields[i] = tempMapping[i];
+  }
 }
 
 bool ButtonRemapActivity::validateUnassigned(const uint8_t pressedButton) {

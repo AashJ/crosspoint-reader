@@ -463,8 +463,9 @@ void loop() {
 
   gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
   gpio.update();
-  halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.tiltPageTurnDirection, SETTINGS.orientation,
-                       activityManager.isReaderActivity());
+  const bool inReader = activityManager.isReaderActivity();
+  mappedInputManager.setReaderMode(inReader);
+  halTiltSensor.update(SETTINGS.tiltPageTurn, SETTINGS.tiltPageTurnDirection, SETTINGS.orientation, inReader);
 
   renderer.setFadingFix(SETTINGS.fadingFix);
 
