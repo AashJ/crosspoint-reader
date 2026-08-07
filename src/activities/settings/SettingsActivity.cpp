@@ -55,10 +55,7 @@ void SettingsActivity::rebuildSettingsLists() {
       if (setting.inTextSettings) continue;
       readerSettings.push_back(setting);
     } else if (setting.category == StrId::STR_CAT_CONTROLS) {
-      if (setting.valuePtr == &CrossPointSettings::pwrBtnFootnoteBack &&
-          SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::FOOTNOTES) {
-        continue;
-      }
+      // Grouping and per-setting visibility are decided in buildControlsLists().
       controlsSettings.push_back(setting);
     } else if (setting.category == StrId::STR_CAT_SYSTEM) {
       systemSettings.push_back(setting);
@@ -92,22 +89,140 @@ void SettingsActivity::rebuildSettingsLists() {
                         SettingInfo::Action(StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts));
   readerSettings.push_back(SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
 
-  // Update currentSettings pointer and count for the active category
-  switch (selectedCategoryIndex) {
-    case 0:
-      currentSettings = &displaySettings;
+  buildControlsLists();
+  applyCurrentSettingsList();
+}
+
+// Splits the flat Controls category into the grouped lists the UI navigates: a parent list of
+// submenu rows plus one list per group. Entries are moved out of controlsSettings, so anything
+// left there stays at the top level.
+void SettingsActivity::buildControlsLists() {
+  controlsPowerSettings.clear();
+  controlsFrontButtonSettings.clear();
+  controlsSideButtonSettings.clear();
+
+  const bool hasFrontButtons = !BoardConfig::hasTouch();
+
+  // Quick-return from footnotes only means anything while some shortcut can open them.
+  const bool anyFootnoteShortcut = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FOOTNOTES ||
+                                   SETTINGS.longPwrBtn == CrossPointSettings::SHORT_PWRBTN::FOOTNOTES ||
+                                   SETTINGS.longPressMenuAction == CrossPointSettings::LONG_ACTION_FOOTNOTES ||
+                                   SETTINGS.longPressBackAction == CrossPointSettings::LONG_ACTION_FOOTNOTES;
+
+  // Quick-return from footnotes is the one Controls entry that hides itself: it is meaningless
+  // unless a shortcut can open footnotes in the first place.
+  auto isHidden = [&](const SettingInfo& s) {
+    return s.valuePtr == &CrossPointSettings::pwrBtnFootnoteBack && !anyFootnoteShortcut;
+  };
+
+  // Returns the group a setting belongs in, or nullptr to leave it at the category's top level.
+  auto groupFor = [&](const SettingInfo& s) -> std::vector<SettingInfo>* {
+    if (s.valuePtr == &CrossPointSettings::shortPwrBtn || s.valuePtr == &CrossPointSettings::longPwrBtn ||
+        s.valuePtr == &CrossPointSettings::pwrBtnFootnoteBack) {
+      return &controlsPowerSettings;
+    }
+    if (s.valuePtr == &CrossPointSettings::sideButtonLayout ||
+        s.valuePtr == &CrossPointSettings::sideButtonOrientationAware ||
+        s.valuePtr == &CrossPointSettings::sideButtonLongPress) {
+      return &controlsSideButtonSettings;
+    }
+    // Without front buttons there is no Front Buttons group, so anything that survived the
+    // device filter in SettingsList (longPressButtonBehavior, which also covers touch
+    // page-turn zones) stays at the top level.
+    if (!hasFrontButtons) return nullptr;
+    if (s.valuePtr == &CrossPointSettings::frontButtonOrientationAware ||
+        s.valuePtr == &CrossPointSettings::readerFrontButtonsEnabled ||
+        s.valuePtr == &CrossPointSettings::longPressButtonBehavior ||
+        s.valuePtr == &CrossPointSettings::longPressMenuAction ||
+        s.valuePtr == &CrossPointSettings::longPressBackAction ||
+        s.valuePtr == &CrossPointSettings::backShortToFileBrowser || s.action == SettingAction::RemapFrontButtons ||
+        s.action == SettingAction::RemapFrontButtonsReader) {
+      return &controlsFrontButtonSettings;
+    }
+    return nullptr;
+  };
+
+  std::vector<SettingInfo> topLevel;
+  topLevel.reserve(controlsSettings.size());
+  for (auto& setting : controlsSettings) {
+    if (isHidden(setting)) continue;
+    auto* group = groupFor(setting);
+    if (group) {
+      group->push_back(std::move(setting));
+    } else {
+      topLevel.push_back(std::move(setting));
+    }
+  }
+
+  controlsSettings.clear();
+  controlsSettings.reserve(topLevel.size() + 3);
+  controlsSettings.push_back(SettingInfo::Submenu(StrId::STR_POWER_BUTTON, SettingAction::ControlsPowerButton));
+  if (hasFrontButtons) {
+    controlsSettings.push_back(SettingInfo::Submenu(StrId::STR_FRONT_BUTTONS, SettingAction::ControlsFrontButtons));
+  }
+  controlsSettings.push_back(SettingInfo::Submenu(StrId::STR_SIDE_BUTTONS, SettingAction::ControlsSideButtons));
+  for (auto& setting : topLevel) {
+    controlsSettings.push_back(std::move(setting));
+  }
+}
+
+void SettingsActivity::applyCurrentSettingsList() {
+  switch (activeSubmenu) {
+    case SettingAction::ControlsPowerButton:
+      currentSettings = &controlsPowerSettings;
       break;
-    case 1:
-      currentSettings = &readerSettings;
+    case SettingAction::ControlsFrontButtons:
+      currentSettings = &controlsFrontButtonSettings;
       break;
-    case 2:
-      currentSettings = &controlsSettings;
+    case SettingAction::ControlsSideButtons:
+      currentSettings = &controlsSideButtonSettings;
       break;
-    case 3:
-      currentSettings = &systemSettings;
+    default:
+      switch (selectedCategoryIndex) {
+        case 0:
+          currentSettings = &displaySettings;
+          break;
+        case 1:
+          currentSettings = &readerSettings;
+          break;
+        case 2:
+          currentSettings = &controlsSettings;
+          break;
+        case 3:
+        default:
+          currentSettings = &systemSettings;
+          break;
+      }
       break;
   }
   settingsCount = static_cast<int>(currentSettings->size());
+}
+
+StrId SettingsActivity::activeSubmenuTitleId() const {
+  switch (activeSubmenu) {
+    case SettingAction::ControlsPowerButton:
+      return StrId::STR_POWER_BUTTON;
+    case SettingAction::ControlsFrontButtons:
+      return StrId::STR_FRONT_BUTTONS;
+    case SettingAction::ControlsSideButtons:
+      return StrId::STR_SIDE_BUTTONS;
+    default:
+      return StrId::STR_NONE_OPT;
+  }
+}
+
+void SettingsActivity::openSubmenu(const SettingAction action) {
+  activeSubmenu = action;
+  applyCurrentSettingsList();
+  selectedSettingIndex = settingsCount > 0 ? 1 : 0;
+  requestUpdate();
+}
+
+void SettingsActivity::closeSubmenu() {
+  activeSubmenu = SettingAction::None;
+  applyCurrentSettingsList();
+  selectedSettingIndex = settingsCount > 0 ? 1 : 0;
+  requestUpdate();
 }
 
 void SettingsActivity::onEnter() {
@@ -116,6 +231,7 @@ void SettingsActivity::onEnter() {
   // Reset selection to first category
   selectedCategoryIndex = 0;
   selectedSettingIndex = 0;
+  activeSubmenu = SettingAction::None;
   preserveQuickResumeTimeoutOn =
       SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
   quickResumeTimeoutAutoEnabled = false;
@@ -138,22 +254,10 @@ void SettingsActivity::loop() {
 
   bool hasChangedCategory = false;
 
+  // Switching category always drops back to that category's top level.
   auto applyCategorySelection = [this] {
-    switch (selectedCategoryIndex) {
-      case 0:
-        currentSettings = &displaySettings;
-        break;
-      case 1:
-        currentSettings = &readerSettings;
-        break;
-      case 2:
-        currentSettings = &controlsSettings;
-        break;
-      case 3:
-        currentSettings = &systemSettings;
-        break;
-    }
-    settingsCount = static_cast<int>(currentSettings->size());
+    activeSubmenu = SettingAction::None;
+    applyCurrentSettingsList();
   };
 
   // Handle actions with early return
@@ -170,7 +274,9 @@ void SettingsActivity::loop() {
   }
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-    if (selectedSettingIndex > 0) {
+    if (activeSubmenu != SettingAction::None) {
+      closeSubmenu();
+    } else if (selectedSettingIndex > 0) {
       selectedSettingIndex = 0;
       requestUpdate();
     } else {
@@ -378,6 +484,9 @@ void SettingsActivity::toggleCurrentSetting() {
     } else {
       SETTINGS.*(setting.valuePtr) = currentValue + setting.valueRange.step;
     }
+  } else if (setting.type == SettingType::SUBMENU) {
+    openSubmenu(setting.action);
+    return;
   } else if (setting.type == SettingType::ACTION) {
     auto resultHandler = [this](const ActivityResult&) { SETTINGS.saveToFile(); };
 
@@ -429,8 +538,11 @@ void SettingsActivity::toggleCurrentSetting() {
       case SettingAction::Language:
         startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput), resultHandler);
         break;
+      case SettingAction::ControlsPowerButton:
+      case SettingAction::ControlsFrontButtons:
+      case SettingAction::ControlsSideButtons:
       case SettingAction::None:
-        // Do nothing
+        // Submenu rows never reach here — they are handled as SettingType::SUBMENU above.
         break;
     }
     return;  // Results will be handled in the result handler, so we can return early here
@@ -492,7 +604,10 @@ void SettingsActivity::render(RenderLock&&) {
 
   const auto& metrics = UITheme::getInstance().getMetrics();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_SETTINGS_TITLE),
+  // Inside a group the header names it, so the user can tell where Back will take them.
+  const StrId submenuTitleId = activeSubmenuTitleId();
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
+                 submenuTitleId == StrId::STR_NONE_OPT ? tr(STR_SETTINGS_TITLE) : I18N.get(submenuTitleId),
                  CROSSPOINT_VERSION);
 
   std::vector<TabInfo> tabs;
@@ -514,7 +629,9 @@ void SettingsActivity::render(RenderLock&&) {
       [&settings](int i) {
         const auto& setting = settings[i];
         std::string valueText = "";
-        if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
+        if (setting.type == SettingType::SUBMENU) {
+          valueText = ">";
+        } else if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
           const bool value = SETTINGS.*(setting.valuePtr);
           valueText = value ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
         } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
@@ -548,12 +665,15 @@ void SettingsActivity::render(RenderLock&&) {
       true);
 
   // Draw help text
-  const auto confirmLabel =
-      (selectedSettingIndex == 0)
-          ? I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount])
-          : (selectedSettingIndex > 0 && (*currentSettings)[selectedSettingIndex - 1].nameId == StrId::STR_TIME_TO_SLEEP
-                 ? tr(STR_SELECT)
-                 : tr(STR_TOGGLE));
+  const SettingInfo* selected = (selectedSettingIndex > 0 && selectedSettingIndex <= settingsCount)
+                                    ? &(*currentSettings)[selectedSettingIndex - 1]
+                                    : nullptr;
+  const auto confirmLabel = (selectedSettingIndex == 0)
+                                ? I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount])
+                                : (selected == nullptr                            ? tr(STR_TOGGLE)
+                                   : selected->type == SettingType::SUBMENU       ? tr(STR_SELECT)
+                                   : selected->nameId == StrId::STR_TIME_TO_SLEEP ? tr(STR_SELECT)
+                                                                                  : tr(STR_TOGGLE));
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

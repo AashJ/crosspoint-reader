@@ -12,12 +12,15 @@
 #include "components/OptionPopup.h"
 #include "util/ButtonNavigator.h"
 
-enum class SettingType { TOGGLE, ENUM, ACTION, VALUE, STRING };
+enum class SettingType { TOGGLE, ENUM, ACTION, VALUE, STRING, SUBMENU };
 
 enum class SettingAction {
   None,
   RemapFrontButtons,
   RemapFrontButtonsReader,
+  ControlsPowerButton,
+  ControlsFrontButtons,
+  ControlsSideButtons,
   CustomiseStatusBar,
   KOReaderSync,
   OPDSBrowser,
@@ -106,6 +109,15 @@ struct SettingInfo {
     SettingInfo s;
     s.nameId = nameId;
     s.type = SettingType::ACTION;
+    s.action = action;
+    return s;
+  }
+
+  // A row that opens a nested list of settings rather than doing something itself.
+  static SettingInfo Submenu(StrId nameId, SettingAction action) {
+    SettingInfo s;
+    s.nameId = nameId;
+    s.type = SettingType::SUBMENU;
     s.action = action;
     return s;
   }
@@ -202,7 +214,14 @@ class SettingsActivity final : public Activity {
   std::vector<SettingInfo> readerSettings;
   std::vector<SettingInfo> controlsSettings;
   std::vector<SettingInfo> systemSettings;
+  // Controls sub-lists, reached from the SUBMENU entries in controlsSettings.
+  std::vector<SettingInfo> controlsPowerSettings;
+  std::vector<SettingInfo> controlsFrontButtonSettings;
+  std::vector<SettingInfo> controlsSideButtonSettings;
   const std::vector<SettingInfo>* currentSettings = nullptr;
+
+  // None while the category's top-level list is showing.
+  SettingAction activeSubmenu = SettingAction::None;
 
   bool preserveQuickResumeTimeoutOn = false;
   bool quickResumeTimeoutAutoEnabled = false;
@@ -217,6 +236,14 @@ class SettingsActivity final : public Activity {
   void openSleepTimeoutPicker();
   void rebuildSettingsLists();
   void syncQuickResumeTimeoutForSleepScreen(bool sleepScreenChanged, bool quickResumeTimeoutChanged);
+  // Points currentSettings at the list for the active category and submenu, and refreshes
+  // settingsCount. The single place that decides which list is on screen.
+  void applyCurrentSettingsList();
+  void openSubmenu(SettingAction action);
+  void closeSubmenu();
+  // Title for the active submenu, or STR_NONE_OPT at the top level.
+  StrId activeSubmenuTitleId() const;
+  void buildControlsLists();
 
  public:
   explicit SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
