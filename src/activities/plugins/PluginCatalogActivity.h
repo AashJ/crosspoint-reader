@@ -6,15 +6,19 @@
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 
-// A settings-menu entry contributed by an SD plugin's device.json manifest.
-struct PluginCatalogRef {
-  std::string title;
-  std::string manifestPath;
+// One installed SD plugin, as surfaced in the on-device Plugins list.
+struct PluginRef {
+  std::string name;          // folder name
+  std::string title;         // from device.json or manifest.json (falls back to name)
+  std::string description;   // one-line summary, if provided
+  std::string manifestPath;  // device.json path, "" when the plugin has no on-device screen
+  std::string readmePath;    // README.md path, "" when absent
+  bool hasCatalog = false;   // a device.json is present (an Open action is offered)
 };
 
-// Scans /.crosspoint/plugins/*/device.json. Called when the settings menu is
-// (re)built, so nothing stays resident while the menu is closed.
-std::vector<PluginCatalogRef> discoverPluginCatalogs();
+// Scans every plugin folder across the SD plugin roots. Called on demand (when
+// the list opens), so nothing stays resident while it is closed.
+std::vector<PluginRef> discoverPlugins();
 
 /**
  * Generic on-device catalog browser driven by an SD plugin's device.json.

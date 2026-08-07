@@ -338,8 +338,24 @@ bool xmlHasElement(const std::string& block, const std::string& localName) {
 }
 }  // namespace
 
-std::vector<PluginCatalogRef> discoverPluginCatalogs() {
-  std::vector<PluginCatalogRef> catalogs;
+namespace {
+// Reads "title"/"description" from a plugin JSON file into the ref, only
+// overwriting non-empty values (so device.json wins over manifest.json).
+void readTitleDesc(const std::string& path, PluginRef& ref) {
+  std::string raw;
+  if (!readSmallFile(path, MAX_MANIFEST_SIZE, raw)) return;
+  JsonDocument filter;
+  filter["title"] = true;
+  filter["description"] = true;
+  JsonDocument doc;
+  if (deserializeJson(doc, raw, DeserializationOption::Filter(filter)) != DeserializationError::Ok) return;
+  if (doc["title"].is<const char*>()) ref.title = doc["title"].as<const char*>();
+  if (doc["description"].is<const char*>()) ref.description = doc["description"].as<const char*>();
+}
+}  // namespace
+
+std::vector<PluginRef> discoverPlugins() {
+  std::vector<PluginRef> plugins;
   std::vector<std::string> seen;  // earlier roots win on name collisions
   for (size_t r = 0; r < PluginLocations::kRootCount; r++) {
     HalFile root = Storage.open(PluginLocations::kRoots[r]);
@@ -349,24 +365,31 @@ std::vector<PluginCatalogRef> discoverPluginCatalogs() {
       char name[64];
       if (entry.getName(name, sizeof(name)) == 0 || name[0] == '.') continue;
       if (std::find(seen.begin(), seen.end(), name) != seen.end()) continue;
-      std::string manifestPath = std::string(PluginLocations::kRoots[r]) + "/" + name + "/device.json";
-      if (!Storage.exists(manifestPath.c_str())) continue;
+
+      const std::string dir = std::string(PluginLocations::kRoots[r]) + "/" + name;
+      const std::string devicePath = dir + "/device.json";
+      const std::string manifestPath = dir + "/manifest.json";
+      const std::string readmePath = dir + "/README.md";
+      const bool hasDevice = Storage.exists(devicePath.c_str());
+      const bool hasManifest = Storage.exists(manifestPath.c_str());
+      const bool hasPluginJs = Storage.exists((dir + "/plugin.js").c_str());
+      // A folder is a plugin if it carries any of the three known files.
+      if (!hasDevice && !hasManifest && !hasPluginJs) continue;
       seen.emplace_back(name);
-      std::string raw;
-      std::string title = name;
-      if (readSmallFile(manifestPath, MAX_MANIFEST_SIZE, raw)) {
-        JsonDocument filter;
-        filter["title"] = true;
-        JsonDocument doc;
-        if (deserializeJson(doc, raw, DeserializationOption::Filter(filter)) == DeserializationError::Ok &&
-            doc["title"].is<const char*>()) {
-          title = doc["title"].as<const char*>();
-        }
-      }
-      catalogs.push_back({std::move(title), std::move(manifestPath)});
+
+      PluginRef ref;
+      ref.name = name;
+      ref.title = name;
+      ref.hasCatalog = hasDevice;
+      if (hasDevice) ref.manifestPath = devicePath;
+      if (Storage.exists(readmePath.c_str())) ref.readmePath = readmePath;
+      // manifest.json first, then device.json overrides (on-device authority).
+      if (hasManifest) readTitleDesc(manifestPath, ref);
+      if (hasDevice) readTitleDesc(devicePath, ref);
+      plugins.push_back(std::move(ref));
     }
   }
-  return catalogs;
+  return plugins;
 }
 
 bool PluginCatalogActivity::loadManifest() {

@@ -7,11 +7,22 @@ and the firmware carries no vendor names, URLs, or file-format knowledge.
 
 ```
 <root>/<name>/
-    manifest.json     web UI card metadata (optional)
+    manifest.json     web UI card metadata (optional): title, description, mount
     plugin.js         browser-side plugin (optional)
-    device.json       on-device catalog screen (optional)
+    device.json       on-device catalog screen (optional): title, description, ...
+    README.md         usage instructions, shown on-device (optional)
     ...assets
 ```
+
+**Discovery and the on-device list.** Every plugin folder (anything holding a
+`manifest.json`, `plugin.js`, or `device.json`) appears under **Settings →
+System → Plugins** on the reader, showing its `title` and one-line
+`description`. Selecting a plugin opens an info screen with the description and
+the plugin's `README.md` as scrollable usage instructions — so even a
+browser-only plugin (no `device.json`) is listed and can explain how to use it
+from the web UI. A plugin that ships a `device.json` also gets an **Open**
+action there to launch its on-device catalog. `title`/`description` are read
+from `manifest.json`, with `device.json` overriding when present.
 
 `<root>` is any of `/.crosspoint/plugins`, `/plugins`, or `/.plugins` — the
 first two-dot-free options exist so plugins are easy to copy onto the card
@@ -87,9 +98,10 @@ without any code running on the device. Anything beyond this vocabulary
 belongs in `plugin.js`.
 
 The firmware pieces (all service-agnostic, in `src/activities/plugins/`):
-`PluginListActivity` (the Plugins menu), `PluginCatalogActivity` (browse /
-download / device-code sign-in), and `discoverPluginCatalogs()` (manifest scan
-when the menu opens; nothing stays resident).
+`PluginListActivity` (the Plugins menu), `PluginInfoActivity` (per-plugin
+description + README + Open action), `PluginCatalogActivity` (browse / download
+/ sign-in), and `discoverPlugins()` (folder scan when the menu opens; nothing
+stays resident).
 
 ### Schema
 
@@ -245,3 +257,77 @@ Two browse formats:
    HTTP status and truncation flags.
 4. Token-less services (public JSON APIs) work by omitting the `token` block
    entirely; that is the quickest way to validate `items`/`fields` paths.
+
+## Ideas to build
+
+The two planes decide *how* you build something, so pick by what the idea needs:
+
+- **On-device (`device.json`)** — standalone on the reader, but only the
+  declarative vocabulary above: an authenticated JSON or XML/OPDS-style catalog,
+  browse, download to SD, optional device-code or password sign-in and per-book
+  sidecar. No arbitrary logic.
+- **Browser (`plugin.js`)** — anything at all (any protocol, auth, format), but
+  it runs in a connected browser/app. Use it when the idea needs request
+  signing, HTML→EPUB conversion, multi-file writes, or a real UI. The job queue
+  (`/api/plugin-jobs` + `/plugins-run`) lets an external app trigger it.
+
+Rule of thumb: if the service is "log in, list an authenticated JSON/XML
+catalog, download files," it's on-device. If it needs computed request bodies
+(OAuth 1.0a signing, canonicalized signatures) or format conversion, it's
+browser-side.
+
+### On-device (`device.json`) ideas
+
+- **Self-hosted library presets** — Kavita, Komga, Audiobookshelf, Calibre-Web,
+  COPS. Most expose OPDS (native OPDS browsing already covers those — a plugin
+  adds value mainly for their JSON APIs or token auth). Build: `browse.format`
+  `json` against the REST API, or `xml` against the OPDS feed; `download.url`
+  from the entry; bearer/Basic/`{cfg.*}` auth. See `bookfusion` (JSON + token)
+  and `webdav` (XML + config creds).
+- **Dictionary store** — browse a JSON index of dictionary files, download to
+  the SD dictionary dir. No native equivalent. Build: token-less `json` catalog,
+  `download.dest_dir` = the dictionary folder, no sidecar. ~15 lines.
+- **Theme store / font store** — same shape as the dictionary store, pointed at
+  the theme or font directory. Asset catalogs OPDS can't express.
+- **More read-later that exports EPUB** — anything with a token API and an
+  EPUB export URL fits like `wallabag`: `auth.type` `password` (or a stored
+  bearer), `browse` the entries JSON, `download` the export endpoint with a
+  Bearer header.
+- **A curated free-books catalog** — Standard Ebooks / Gutenberg via their OPDS
+  feed (`xml` format, token-less). Overlaps native OPDS, but ships as a
+  zero-config preset.
+
+### Browser (`plugin.js`) ideas
+
+- **Plugin store** — install other plugins from a hosted catalog. Build: fetch
+  a catalog with `api.relay`, `/mkdir` the target folder, `api.writeFile` each
+  file. See `plugin-store/`.
+- **AO3 / fanfiction downloader** — the site serves per-work EPUB downloads.
+  Build: take a work URL, `api.fetchToSd` (or `api.relay` + `api.writeFile`) the
+  EPUB to SD. Browsing/search is HTML, so parse it in the browser.
+- **RSS → EPUB digest** — build a "morning edition." Fetch feeds with
+  `api.relay`, assemble an EPUB in the browser with the JSZip the File Manager
+  page already loads, then `api.writeFile` it to SD.
+- **Read-any-article** — paste a URL, run it through a readability service via
+  `api.relay`, wrap the result as an EPUB, write to SD.
+- **Metadata / cover editor** — a File Manager plugin: open an EPUB with JSZip,
+  edit the OPF (title/author/cover), rewrite it in place. See
+  `organize-by-author/` for the File-Manager-endpoints pattern.
+- **Library tidy tools** — dedupe, bulk rename, move-by-metadata. Same
+  same-origin endpoints (`/api/files`, `/mkdir`, `/move`, `/delete`), no device
+  API needed.
+- **Signed-API services** (Instapaper OAuth 1.0a, etc.) — must be browser-side:
+  do the per-request signing in JS with `crypto.subtle`, relay the calls, and
+  convert the article HTML to EPUB before writing to SD.
+
+### Building blocks reference
+
+| Need | Use |
+|---|---|
+| Outbound HTTP(S), any method (CORS-free) | `api.relay(method, url, headers, body)` |
+| Download a URL straight to SD | `api.fetchToSd(url, dest, headers)` |
+| Write a small file to SD | `api.writeFile(path, base64)` |
+| Crypto (hash, HMAC via SHA, AES, RSA) | `api.crypto(op, fields)` or browser `crypto.subtle` |
+| Create / delete / move SD files | same-origin `/mkdir`, `/delete`, `/move` |
+| On-device catalog/browse/download | `device.json` (this document) |
+| External app triggers an action | `api.registerAction(name, fn)` + `/api/plugin-jobs` |

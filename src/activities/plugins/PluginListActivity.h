@@ -6,9 +6,9 @@
 #include "util/ButtonNavigator.h"
 
 /**
- * The single Settings entry point for SD plugins: lists every plugin that
- * ships a device.json and opens its catalog subscreen. Keeps the settings
- * menu stable no matter how many plugins the card carries.
+ * The single Settings entry point for SD plugins: lists every installed plugin
+ * (with title + description) and opens each one's info screen. Keeps the
+ * settings menu stable no matter how many plugins the card carries.
  */
 class PluginListActivity final : public Activity {
  public:
@@ -21,9 +21,10 @@ class PluginListActivity final : public Activity {
 
  private:
   ButtonNavigator buttonNavigator;
-  std::vector<PluginCatalogRef> catalogs;
+  std::vector<PluginRef> plugins;
   int selectorIndex = 0;
   bool subscreenOpen = false;
+  bool consumeConfirm = true;  // swallow the Confirm that launched this screen
 
   void openSelected();
 };
