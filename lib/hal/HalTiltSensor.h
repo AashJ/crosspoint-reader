@@ -9,7 +9,11 @@ enum Value : uint8_t { PORTRAIT = 0, LANDSCAPE_CW = 1, INVERTED = 2, LANDSCAPE_C
 }
 
 namespace CrossPointTiltPageTurn {
-enum Value : uint8_t { TILT_OFF = 0, TILT_NORMAL = 1, TILT_INVERTED = 2 };
+enum Value : uint8_t { TILT_OFF = 0, TILT_ON = 1 };
+}
+
+namespace CrossPointTiltPageTurnDirection {
+enum Value : uint8_t { TILT_LEFT_RIGHT = 0, TILT_RIGHT_LEFT = 1, TILT_FORWARD_BACK = 2, TILT_BACK_FORWARD = 3 };
 }
 
 class HalTiltSensor;
@@ -54,7 +58,7 @@ class HalTiltSensor {
   bool isAvailable() const { return _available; }
 
   // Poll the accelerometer and update tilt gesture state.
-  void update(const uint8_t mode, const uint8_t orientation, const bool inReader);
+  void update(const uint8_t mode, const uint8_t direction, const uint8_t orientation, const bool inReader);
 
   // Returns true once per tilt-forward gesture (next page direction).
   // Consumed on read — subsequent calls return false until next gesture.

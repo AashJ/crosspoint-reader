@@ -51,6 +51,22 @@ void CrossPointSettings::validateFrontButtonMapping(CrossPointSettings& settings
   }
 }
 
+void CrossPointSettings::validateReaderFrontButtonMapping(CrossPointSettings& settings) {
+  const uint8_t mapping[] = {settings.readerFrontButtonBack, settings.readerFrontButtonConfirm,
+                             settings.readerFrontButtonLeft, settings.readerFrontButtonRight};
+  for (size_t i = 0; i < 4; i++) {
+    for (size_t j = i + 1; j < 4; j++) {
+      if (mapping[i] == mapping[j]) {
+        settings.readerFrontButtonBack = FRONT_HW_BACK;
+        settings.readerFrontButtonConfirm = FRONT_HW_CONFIRM;
+        settings.readerFrontButtonLeft = FRONT_HW_LEFT;
+        settings.readerFrontButtonRight = FRONT_HW_RIGHT;
+        return;
+      }
+    }
+  }
+}
+
 uint8_t CrossPointSettings::sleepTimeoutEnumToMinutes(const uint8_t legacyValue) {
   switch (legacyValue) {
     case SLEEP_1_MIN:
@@ -94,6 +110,10 @@ void CrossPointSettings::toJson(JsonDocument& doc) const {
   doc["frontButtonConfirm"] = frontButtonConfirm;
   doc["frontButtonLeft"] = frontButtonLeft;
   doc["frontButtonRight"] = frontButtonRight;
+  doc["readerFrontButtonBack"] = readerFrontButtonBack;
+  doc["readerFrontButtonConfirm"] = readerFrontButtonConfirm;
+  doc["readerFrontButtonLeft"] = readerFrontButtonLeft;
+  doc["readerFrontButtonRight"] = readerFrontButtonRight;
   // Font family and size — both use dynamic getter/setters in SettingsList (the
   // option lists depend on the SD font registry), so the generic loop skips them.
   doc["fontFamily"] = fontFamily;
@@ -193,6 +213,80 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   frontButtonRight =
       clamp(doc["frontButtonRight"] | (uint8_t)FRONT_HW_RIGHT, FRONT_BUTTON_HARDWARE_COUNT, FRONT_HW_RIGHT);
   validateFrontButtonMapping(s);
+  readerFrontButtonBack =
+      clamp(doc["readerFrontButtonBack"] | (uint8_t)FRONT_HW_BACK, FRONT_BUTTON_HARDWARE_COUNT, FRONT_HW_BACK);
+  readerFrontButtonConfirm =
+      clamp(doc["readerFrontButtonConfirm"] | (uint8_t)FRONT_HW_CONFIRM, FRONT_BUTTON_HARDWARE_COUNT, FRONT_HW_CONFIRM);
+  readerFrontButtonLeft =
+      clamp(doc["readerFrontButtonLeft"] | (uint8_t)FRONT_HW_LEFT, FRONT_BUTTON_HARDWARE_COUNT, FRONT_HW_LEFT);
+  readerFrontButtonRight =
+      clamp(doc["readerFrontButtonRight"] | (uint8_t)FRONT_HW_RIGHT, FRONT_BUTTON_HARDWARE_COUNT, FRONT_HW_RIGHT);
+  validateReaderFrontButtonMapping(s);
+
+  // --- Controls migrations -------------------------------------------------
+  // Each runs only when the new key is absent, so a file already written by this
+  // version is left alone and the migration cannot re-fire against a user's edit.
+
+  // Orientation-aware front buttons went from a toggle to a three-state setting.
+  // The old "on" meant navigation buttons only.
+  if (doc["frontButtonOrientationAware"].isNull() && !doc["frontButtonFollowOrientation"].isNull()) {
+    frontButtonOrientationAware = (doc["frontButtonFollowOrientation"] | (uint8_t)0) != 0
+                                      ? FRONT_ORIENTATION_AWARE_NAV_BUTTONS
+                                      : FRONT_ORIENTATION_AWARE_OFF;
+    needsResave = true;
+  }
+
+  // The side buttons used to share longPressButtonBehavior with the front pair.
+  // Carry that value across so an upgrade does not change what a side hold does.
+  if (doc["sideButtonLongPress"].isNull() && !doc["longPressButtonBehavior"].isNull()) {
+    switch (doc["longPressButtonBehavior"] | (uint8_t)OFF) {
+      case CHAPTER_SKIP:
+        sideButtonLongPress = SIDE_LONG_CHAPTER_SKIP;
+        break;
+      case ORIENTATION_CHANGE:
+        sideButtonLongPress = SIDE_LONG_ORIENTATION_CHANGE;
+        break;
+      default:
+        sideButtonLongPress = SIDE_LONG_OFF;
+        break;
+    }
+    needsResave = true;
+  }
+
+  // longPressMenuFunction was a four-entry list with its own numbering.
+  if (doc["longPressMenuAction"].isNull() && !doc["longPressMenuFunction"].isNull()) {
+    switch (doc["longPressMenuFunction"] | (uint8_t)LP_MENU_DISABLED) {
+      case LP_MENU_KOSYNC:
+        longPressMenuAction = LONG_ACTION_SYNC_PROGRESS;
+        break;
+      case LP_MENU_BOOKMARK:
+        longPressMenuAction = LONG_ACTION_TOGGLE_BOOKMARK;
+        break;
+      case LP_MENU_DICTIONARY:
+        longPressMenuAction = LONG_ACTION_LOOKUP_WORD;
+        break;
+      case LP_MENU_DISABLED:
+      default:
+        longPressMenuAction = LONG_ACTION_OFF;
+        break;
+    }
+    needsResave = true;
+  }
+
+  // tiltPageTurn used to carry both the on/off state and the axis direction.
+  // Legacy "normal" is exactly the non-inverted left/right gesture.
+  if (doc["tiltPageTurnDirection"].isNull() && !doc["tiltPageTurn"].isNull()) {
+    const uint8_t legacyTilt = doc["tiltPageTurn"] | (uint8_t)TILT_OFF;
+    if (legacyTilt == LEGACY_TILT_INVERTED) {
+      tiltPageTurn = TILT_ON;
+      tiltPageTurnDirection = TILT_RIGHT_LEFT;
+      needsResave = true;
+    } else if (legacyTilt == LEGACY_TILT_NORMAL) {
+      tiltPageTurn = TILT_ON;
+      tiltPageTurnDirection = TILT_LEFT_RIGHT;
+      needsResave = true;
+    }
+  }
 
   // Reader font size — an actual point size since 1.5. Files written by 1.4 and
   // earlier hold the old SMALL/MEDIUM/LARGE/EXTRA_LARGE slot in 0..3; no font is

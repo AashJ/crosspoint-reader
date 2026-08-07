@@ -62,7 +62,8 @@ bool HalTiltSensor::deepSleep() {
   return true;
 }
 
-void HalTiltSensor::update(const uint8_t mode, const uint8_t orientation, const bool inReader) {
+void HalTiltSensor::update(const uint8_t mode, const uint8_t direction, const uint8_t orientation,
+                           const bool inReader) {
   if (!_available) {
     return;
   }
@@ -97,25 +98,33 @@ void HalTiltSensor::update(const uint8_t mode, const uint8_t orientation, const 
     return;
   }
 
-  // Map the gyro axis to left/right tilt based on reader orientation.
+  // Map the gyro axis to the selected gesture based on reader orientation.
   // On the X3 PCB: X axis = left/right in portrait, Y axis = left/right in landscape.
+  // The left/right axis with inverted == false reproduces the pre-split TILT_NORMAL behaviour.
+  const bool forwardBack = direction == CrossPointTiltPageTurnDirection::TILT_FORWARD_BACK ||
+                           direction == CrossPointTiltPageTurnDirection::TILT_BACK_FORWARD;
+  const bool inverted = direction == CrossPointTiltPageTurnDirection::TILT_RIGHT_LEFT ||
+                        direction == CrossPointTiltPageTurnDirection::TILT_BACK_FORWARD;
   float tiltAxis;
   switch (orientation) {
     case CrossPointOrientation::PORTRAIT:
-      tiltAxis = mode == CrossPointTiltPageTurn::TILT_INVERTED ? -gx : gx;
+      tiltAxis = forwardBack ? gy : gx;
       break;
     case CrossPointOrientation::INVERTED:
-      tiltAxis = mode == CrossPointTiltPageTurn::TILT_INVERTED ? gx : -gx;
+      tiltAxis = forwardBack ? -gy : -gx;
       break;
     case CrossPointOrientation::LANDSCAPE_CW:
-      tiltAxis = mode == CrossPointTiltPageTurn::TILT_INVERTED ? gy : -gy;
+      tiltAxis = forwardBack ? gx : -gy;
       break;
     case CrossPointOrientation::LANDSCAPE_CCW:
-      tiltAxis = mode == CrossPointTiltPageTurn::TILT_INVERTED ? -gy : gy;
+      tiltAxis = forwardBack ? -gx : gy;
       break;
     default:
-      tiltAxis = gx;
+      tiltAxis = forwardBack ? gy : gx;
       break;
+  }
+  if (inverted) {
+    tiltAxis = -tiltAxis;
   }
 
   if (_inTilt) {

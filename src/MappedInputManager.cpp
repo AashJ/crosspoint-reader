@@ -13,7 +13,7 @@ bool MappedInputManager::isNavDirectionSwapped() const {
   // setting. The reader (and its modal menus) render rotated, so navigation/labels flip there; the
   // home and settings UI render in portrait, so they never flip even when a rotated reader is configured.
   const auto orientation = renderer.getOrientation();
-  return SETTINGS.frontButtonFollowOrientation &&
+  return SETTINGS.frontButtonOrientationAware != CrossPointSettings::FRONT_ORIENTATION_AWARE_OFF &&
          (orientation == GfxRenderer::PortraitInverted || orientation == GfxRenderer::LandscapeCounterClockwise);
 }
 
@@ -44,8 +44,9 @@ MappedInputManager::Button MappedInputManager::mapScreenDirection(const Button b
       return button;
   }
 
-  const uint8_t orientation =
-      SETTINGS.frontButtonFollowOrientation ? static_cast<uint8_t>(renderer.getOrientation()) : 0;
+  const uint8_t orientation = SETTINGS.frontButtonOrientationAware != CrossPointSettings::FRONT_ORIENTATION_AWARE_OFF
+                                  ? static_cast<uint8_t>(renderer.getOrientation())
+                                  : 0;
   return directions[orientation][direction];
 }
 
@@ -98,7 +99,7 @@ bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint
       }
     case Button::NavNext:
       // Logical "next item" navigation: side Down + front Right, with the control axis flipped in
-      // INVERTED / LANDSCAPE_CCW (frontButtonFollowOrientation) so it matches the rotated hint labels.
+      // INVERTED / LANDSCAPE_CCW (frontButtonOrientationAware) so it matches the rotated hint labels.
       return isNavDirectionSwapped() ? (mapButton(Button::Up, fn) || mapButton(Button::Left, fn))
                                      : (mapButton(Button::Down, fn) || mapButton(Button::Right, fn));
     case Button::NavPrevious:

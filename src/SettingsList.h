@@ -178,6 +178,54 @@ inline SettingInfo buildDictionarySetting(const std::vector<DictionaryEntry>& di
   return s;
 }
 
+// Power-button shortcut options, shared by the short- and long-press settings.
+//
+// The display order is grouped by usefulness rather than by enum value, so the labels and the
+// persisted values are supplied as two parallel arrays and reconciled through enumRawValues.
+// Only actions the reader can execute today are listed; the enum carries no entry we cannot run.
+inline SettingInfo buildPowerButtonActionSetting(StrId nameId, uint8_t CrossPointSettings::* valuePtr,
+                                                 const char* key) {
+  std::vector<StrId> labels = {StrId::STR_IGNORE,          StrId::STR_SLEEP,           StrId::STR_PAGE_TURN,
+                               StrId::STR_FORCE_REFRESH,   StrId::STR_BOOKMARK_OPTION, StrId::STR_SYNC_PROGRESS,
+                               StrId::STR_TAKE_SCREENSHOT, StrId::STR_FOOTNOTES,       StrId::STR_BROWSE_FILES,
+                               StrId::STR_FILE_TRANSFER,   StrId::STR_LOOK_UP_WORD};
+  std::vector<uint8_t> raw = {
+      CrossPointSettings::IGNORE,        CrossPointSettings::SLEEP,           CrossPointSettings::PAGE_TURN,
+      CrossPointSettings::FORCE_REFRESH, CrossPointSettings::TOGGLE_BOOKMARK, CrossPointSettings::SYNC_PROGRESS,
+      CrossPointSettings::SCREENSHOT,    CrossPointSettings::FOOTNOTES,       CrossPointSettings::FILE_BROWSER,
+      CrossPointSettings::FILE_TRANSFER, CrossPointSettings::LOOKUP_WORD};
+  if (halTiltSensor.isAvailable()) {
+    labels.push_back(StrId::STR_TOGGLE_TILT_PAGE_TURN);
+    raw.push_back(CrossPointSettings::TOGGLE_TILT_PAGE_TURN);
+  }
+  return SettingInfo::Enum(nameId, valuePtr, std::move(labels), key, StrId::STR_CAT_CONTROLS)
+      .withEnumRawValues(std::move(raw));
+}
+
+// Reader long-press quick actions, shared by the Confirm and Back long-press settings.
+inline SettingInfo buildLongPressActionSetting(StrId nameId, uint8_t CrossPointSettings::* valuePtr, const char* key) {
+  std::vector<StrId> labels = {StrId::STR_STATE_OFF,       StrId::STR_SLEEP,         StrId::STR_FORCE_REFRESH,
+                               StrId::STR_BOOKMARK_OPTION, StrId::STR_SYNC_PROGRESS, StrId::STR_TAKE_SCREENSHOT,
+                               StrId::STR_FOOTNOTES,       StrId::STR_BROWSE_FILES,  StrId::STR_FILE_TRANSFER,
+                               StrId::STR_LOOK_UP_WORD};
+  std::vector<uint8_t> raw = {CrossPointSettings::LONG_ACTION_OFF,
+                              CrossPointSettings::LONG_ACTION_SLEEP,
+                              CrossPointSettings::LONG_ACTION_REFRESH_SCREEN,
+                              CrossPointSettings::LONG_ACTION_TOGGLE_BOOKMARK,
+                              CrossPointSettings::LONG_ACTION_SYNC_PROGRESS,
+                              CrossPointSettings::LONG_ACTION_SCREENSHOT,
+                              CrossPointSettings::LONG_ACTION_FOOTNOTES,
+                              CrossPointSettings::LONG_ACTION_FILE_BROWSER,
+                              CrossPointSettings::LONG_ACTION_FILE_TRANSFER,
+                              CrossPointSettings::LONG_ACTION_LOOKUP_WORD};
+  if (halTiltSensor.isAvailable()) {
+    labels.push_back(StrId::STR_TOGGLE_TILT_PAGE_TURN);
+    raw.push_back(CrossPointSettings::LONG_ACTION_TOGGLE_TILT_PAGE_TURN);
+  }
+  return SettingInfo::Enum(nameId, valuePtr, std::move(labels), key, StrId::STR_CAT_CONTROLS)
+      .withEnumRawValues(std::move(raw));
+}
+
 // Shared settings list used by both the device settings UI and the web settings API.
 // Each entry has a key (for JSON API) and category (for grouping).
 // ACTION-type entries and entries without a key are device-only.
@@ -278,29 +326,45 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Enum(StrId::STR_IMAGES, &CrossPointSettings::imageRendering,
                           {StrId::STR_IMAGES_DISPLAY, StrId::STR_IMAGES_PLACEHOLDER, StrId::STR_IMAGES_SUPPRESS},
                           "imageRendering", StrId::STR_CAT_READER),
-        // --- Controls ---
-        SettingInfo::Enum(StrId::STR_SIDE_BTN_LAYOUT, &CrossPointSettings::sideButtonLayout,
-                          {StrId::STR_PREV_NEXT, StrId::STR_NEXT_PREV, StrId::STR_DISABLED}, "sideButtonLayout",
-                          StrId::STR_CAT_CONTROLS),
-        SettingInfo::Enum(StrId::STR_TOUCH_READER_CONTROLS, &CrossPointSettings::touchReaderControls,
-                          {StrId::STR_STATE_OFF, StrId::STR_STATE_ON}, "touchReaderControls", StrId::STR_CAT_CONTROLS),
-        SettingInfo::Toggle(StrId::STR_FRONT_BTN_FOLLOW_ORIENTATION, &CrossPointSettings::frontButtonFollowOrientation,
-                            "frontButtonFollowOrientation", StrId::STR_CAT_CONTROLS),
-        SettingInfo::Enum(StrId::STR_LONG_PRESS_BEHAVIOR, &CrossPointSettings::longPressButtonBehavior,
-                          {StrId::STR_LONG_PRESS_BEHAVIOR_OFF, StrId::STR_LONG_PRESS_BEHAVIOR_SKIP,
-                           StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION},
-                          "longPressButtonBehavior", StrId::STR_CAT_CONTROLS),
-        SettingInfo::Enum(StrId::STR_LONG_PRESS_MENU, &CrossPointSettings::longPressMenuFunction,
-                          {StrId::STR_KOSYNC, StrId::STR_DISABLED, StrId::STR_BOOKMARK_OPTION, StrId::STR_DICTIONARY},
-                          "longPressMenuFunction", StrId::STR_CAT_CONTROLS),
-        SettingInfo::Enum(
-            StrId::STR_SHORT_PWR_BTN, &CrossPointSettings::shortPwrBtn,
-            {StrId::STR_IGNORE, StrId::STR_SLEEP, StrId::STR_PAGE_TURN, StrId::STR_FORCE_REFRESH, StrId::STR_FOOTNOTES},
-            "shortPwrBtn", StrId::STR_CAT_CONTROLS),
+        // --- Controls: Power Button ---
+        buildPowerButtonActionSetting(StrId::STR_SHORT_PRESS_ACTION, &CrossPointSettings::shortPwrBtn, "shortPwrBtn"),
+        buildPowerButtonActionSetting(StrId::STR_LONG_PRESS_ACTION, &CrossPointSettings::longPwrBtn, "longPwrBtn"),
         SettingInfo::Toggle(StrId::STR_PWR_BTN_FOOTNOTE_BACK, &CrossPointSettings::pwrBtnFootnoteBack,
                             "pwrBtnFootnoteBack", StrId::STR_CAT_CONTROLS),
+
+        // --- Controls: Front Buttons ---
+        SettingInfo::Toggle(StrId::STR_READER_BUTTON_OVERRIDE, &CrossPointSettings::readerFrontButtonsEnabled,
+                            "readerFrontButtonsEnabled", StrId::STR_CAT_CONTROLS),
+        SettingInfo::Enum(StrId::STR_ORIENTATION_AWARE, &CrossPointSettings::frontButtonOrientationAware,
+                          {StrId::STR_NO, StrId::STR_ORIENT_NAV_BUTTONS, StrId::STR_ORIENT_ALL_BUTTONS},
+                          "frontButtonOrientationAware", StrId::STR_CAT_CONTROLS),
+        SettingInfo::Enum(StrId::STR_LONG_PRESS_BEHAVIOR, &CrossPointSettings::longPressButtonBehavior,
+                          {StrId::STR_LONG_PRESS_BEHAVIOR_OFF, StrId::STR_LONG_PRESS_BEHAVIOR_SKIP,
+                           StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION, StrId::STR_LONG_PRESS_BEHAVIOR_FONT_SIZE},
+                          "longPressButtonBehavior", StrId::STR_CAT_CONTROLS),
+        buildLongPressActionSetting(StrId::STR_LONG_PRESS_MENU, &CrossPointSettings::longPressMenuAction,
+                                    "longPressMenuAction"),
+        buildLongPressActionSetting(StrId::STR_LONG_PRESS_BACK_ACTION, &CrossPointSettings::longPressBackAction,
+                                    "longPressBackAction"),
         SettingInfo::Toggle(StrId::STR_BACK_SHORT_TO_FILE_BROWSER, &CrossPointSettings::backShortToFileBrowser,
                             "backShortToFileBrowser", StrId::STR_CAT_CONTROLS),
+
+        // --- Controls: Side Buttons ---
+        SettingInfo::Enum(StrId::STR_SIDE_BTN_LAYOUT, &CrossPointSettings::sideButtonLayout,
+                          {StrId::STR_PREV_NEXT, StrId::STR_NEXT_PREV, StrId::STR_NEXT_NEXT, StrId::STR_DISABLED},
+                          "sideButtonLayout", StrId::STR_CAT_CONTROLS)
+            .withEnumRawValues({CrossPointSettings::PREV_NEXT, CrossPointSettings::NEXT_PREV,
+                                CrossPointSettings::NEXT_NEXT, CrossPointSettings::SIDE_BUTTONS_DISABLED}),
+        SettingInfo::Toggle(StrId::STR_ORIENTATION_AWARE, &CrossPointSettings::sideButtonOrientationAware,
+                            "sideButtonOrientationAware", StrId::STR_CAT_CONTROLS),
+        SettingInfo::Enum(StrId::STR_LONG_PRESS_ACTION, &CrossPointSettings::sideButtonLongPress,
+                          {StrId::STR_LONG_PRESS_BEHAVIOR_OFF, StrId::STR_LONG_PRESS_BEHAVIOR_SKIP,
+                           StrId::STR_LONG_PRESS_BEHAVIOR_ORIENTATION, StrId::STR_LONG_PRESS_BEHAVIOR_FONT_SIZE},
+                          "sideButtonLongPress", StrId::STR_CAT_CONTROLS),
+
+        // --- Controls: Touch ---
+        SettingInfo::Enum(StrId::STR_TOUCH_READER_CONTROLS, &CrossPointSettings::touchReaderControls,
+                          {StrId::STR_STATE_OFF, StrId::STR_STATE_ON}, "touchReaderControls", StrId::STR_CAT_CONTROLS),
 
         // --- System ---
         SettingInfo::Value(
@@ -403,17 +467,14 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Toggle(StrId::STR_CLOCK_SYNCED, &CrossPointSettings::clockHasBeenSynced, "clockHasBeenSynced",
                             StrId::STR_CUSTOMISE_STATUS_BAR),
     };
-    // Only show tilt page turn setting when the QMI8658 IMU is present (X3)
+    // Tilt page turning needs an IMU (X3), so both entries only exist on those boards.
     if (halTiltSensor.isAvailable()) {
-      // Insert after the short power button setting (end of Controls section)
-      for (auto it = v.begin(); it != v.end(); ++it) {
-        if (it->nameId == StrId::STR_SHORT_PWR_BTN) {
-          v.insert(it + 1, SettingInfo::Enum(StrId::STR_TILT_PAGE_TURN, &CrossPointSettings::tiltPageTurn,
-                                             {StrId::STR_STATE_OFF, StrId::STR_NORMAL, StrId::STR_INVERTED},
-                                             "tiltPageTurn", StrId::STR_CAT_CONTROLS));
-          break;
-        }
-      }
+      v.push_back(SettingInfo::Toggle(StrId::STR_TILT_PAGE_TURN, &CrossPointSettings::tiltPageTurn, "tiltPageTurn",
+                                      StrId::STR_CAT_CONTROLS));
+      v.push_back(SettingInfo::Enum(StrId::STR_TILT_DIRECTION, &CrossPointSettings::tiltPageTurnDirection,
+                                    {StrId::STR_TILT_LEFT_RIGHT, StrId::STR_TILT_RIGHT_LEFT,
+                                     StrId::STR_TILT_FORWARD_BACK, StrId::STR_TILT_BACK_FORWARD},
+                                    "tiltPageTurnDirection", StrId::STR_CAT_CONTROLS));
     }
     return v;
   }();
@@ -425,10 +486,16 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
             v.end());
   }
   if (BoardConfig::hasTouch()) {
+    // Touch devices have no front buttons, so the entries that only remap or bind them are
+    // meaningless there. longPressButtonBehavior deliberately stays: it also governs a long
+    // press on the reader's touch page-turn zones.
     v.erase(std::remove_if(v.begin(), v.end(),
                            [](const SettingInfo& s) {
-                             return s.nameId == StrId::STR_FRONT_BTN_FOLLOW_ORIENTATION ||
-                                    s.nameId == StrId::STR_SUNLIGHT_FADING_FIX;
+                             return s.nameId == StrId::STR_SUNLIGHT_FADING_FIX ||
+                                    s.valuePtr == &CrossPointSettings::frontButtonOrientationAware ||
+                                    s.valuePtr == &CrossPointSettings::readerFrontButtonsEnabled ||
+                                    s.valuePtr == &CrossPointSettings::longPressMenuAction ||
+                                    s.valuePtr == &CrossPointSettings::longPressBackAction;
                            }),
             v.end());
   }

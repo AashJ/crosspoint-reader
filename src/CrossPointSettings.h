@@ -88,7 +88,33 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
 
   // Side button layout options
   // Default: Up = Previous, Down = Next
-  enum SIDE_BUTTON_LAYOUT { PREV_NEXT = 0, NEXT_PREV = 1, SIDE_BUTTONS_DISABLED = 2, SIDE_BUTTON_LAYOUT_COUNT };
+  // NEXT_NEXT makes both side buttons turn forward, for one-handed reading.
+  enum SIDE_BUTTON_LAYOUT {
+    PREV_NEXT = 0,
+    NEXT_PREV = 1,
+    SIDE_BUTTONS_DISABLED = 2,
+    NEXT_NEXT = 3,
+    SIDE_BUTTON_LAYOUT_COUNT
+  };
+
+  // How far front-button roles follow the reader orientation. NAV_BUTTONS rotates only the
+  // page-navigation pair; ALL_BUTTONS also mirrors Back/Confirm when the screen is inverted.
+  enum FRONT_BUTTON_ORIENTATION_AWARE {
+    FRONT_ORIENTATION_AWARE_OFF = 0,
+    FRONT_ORIENTATION_AWARE_NAV_BUTTONS = 1,
+    FRONT_ORIENTATION_AWARE_ALL_BUTTONS = 2,
+    FRONT_ORIENTATION_AWARE_COUNT
+  };
+
+  // Side button long-press action in the reader. Kept separate from
+  // longPressButtonBehavior so the side and front pairs can differ.
+  enum SIDE_LONG_PRESS {
+    SIDE_LONG_OFF = 0,
+    SIDE_LONG_CHAPTER_SKIP = 1,
+    SIDE_LONG_ORIENTATION_CHANGE = 2,
+    SIDE_LONG_FONT_SIZE = 3,
+    SIDE_LONG_PRESS_COUNT
+  };
 
   // Font family options (built-in fonts only; SD card fonts use sdFontFamilyName)
   enum FONT_FAMILY { NOTOSERIF = 0, NOTOSANS = 1, FONT_FAMILY_COUNT };
@@ -129,13 +155,28 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     REFRESH_FREQUENCY_COUNT
   };
 
-  // Short power button press actions
-  enum SHORT_PWRBTN { IGNORE = 0, SLEEP = 1, PAGE_TURN = 2, FORCE_REFRESH = 3, FOOTNOTES = 4, SHORT_PWRBTN_COUNT };
+  // Power button shortcut actions, shared by shortPwrBtn and longPwrBtn.
+  // Values 0..4 are the historical CrossPoint set and MUST keep their meanings — in particular
+  // 4 stays FOOTNOTES, which is where CrossInk's numbering diverges. New actions are appended,
+  // and the settings list reorders them for display via enumRawValues.
+  enum SHORT_PWRBTN {
+    IGNORE = 0,
+    SLEEP = 1,
+    PAGE_TURN = 2,
+    FORCE_REFRESH = 3,
+    FOOTNOTES = 4,
+    TOGGLE_BOOKMARK = 5,
+    SYNC_PROGRESS = 6,
+    SCREENSHOT = 7,
+    FILE_BROWSER = 8,
+    LOOKUP_WORD = 9,
+    FILE_TRANSFER = 10,
+    TOGGLE_TILT_PAGE_TURN = 11,
+    SHORT_PWRBTN_COUNT
+  };
 
-  // Long-press Confirm action while reading an EPUB. The setting cycles through these values.
-  // Persisted in settings.json by index: any new function (e.g. dictionary, bookmark) MUST use a
-  // value >= 2 and be appended at the END of the enumValues array in SettingsList.h, otherwise the
-  // stored indices shift and existing saves are silently misinterpreted.
+  // Legacy long-press Confirm setting, superseded by LONG_PRESS_MENU_ACTION.
+  // Retained only so fromJson() can migrate longPressMenuFunction into longPressMenuAction.
   enum LONG_PRESS_MENU_FUNCTION {
     LP_MENU_KOSYNC = 0,
     LP_MENU_DISABLED = 1,
@@ -144,14 +185,32 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     LONG_PRESS_MENU_FUNCTION_COUNT
   };
 
+  // Reader long-press quick actions, shared by longPressMenuAction (Confirm) and
+  // longPressBackAction (Back). Append only — these are persisted by value.
+  enum LONG_PRESS_ACTION {
+    LONG_ACTION_OFF = 0,
+    LONG_ACTION_SLEEP = 1,
+    LONG_ACTION_REFRESH_SCREEN = 2,
+    LONG_ACTION_TOGGLE_BOOKMARK = 3,
+    LONG_ACTION_SYNC_PROGRESS = 4,
+    LONG_ACTION_LOOKUP_WORD = 5,
+    LONG_ACTION_FOOTNOTES = 6,
+    LONG_ACTION_SCREENSHOT = 7,
+    LONG_ACTION_FILE_BROWSER = 8,
+    LONG_ACTION_FILE_TRANSFER = 9,
+    LONG_ACTION_TOGGLE_TILT_PAGE_TURN = 10,
+    LONG_PRESS_ACTION_COUNT
+  };
+
   // Hide battery percentage
   enum HIDE_BATTERY_PERCENTAGE { HIDE_NEVER = 0, HIDE_READER = 1, HIDE_ALWAYS = 2, HIDE_BATTERY_PERCENTAGE_COUNT };
 
-  // Page turn button long press behavior
+  // Front navigation button long press behavior
   enum LONG_PRESS_BUTTON_BEHAVIOR {
     OFF = 0,
     CHAPTER_SKIP = 1,
     ORIENTATION_CHANGE = 2,
+    FONT_SIZE_CHANGE = 3,
     LONG_PRESS_BUTTON_BEHAVIOR_COUNT
   };
 
@@ -161,7 +220,22 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Image rendering in EPUB reader
   enum IMAGE_RENDERING { IMAGES_DISPLAY = 0, IMAGES_PLACEHOLDER = 1, IMAGES_SUPPRESS = 2, IMAGE_RENDERING_COUNT };
 
-  enum TILT_PAGE_TURN { TILT_OFF = 0, TILT_NORMAL = 1, TILT_NVERTED = 2, TILT_PAGE_TURN_COUNT };
+  // Tilt page turn is an on/off switch since the gesture axis moved into
+  // tiltPageTurnDirection. TILT_NORMAL/TILT_NVERTED are the legacy combined values,
+  // kept for the fromJson() migration only.
+  enum TILT_PAGE_TURN { TILT_OFF = 0, TILT_ON = 1, TILT_PAGE_TURN_COUNT };
+  static constexpr uint8_t LEGACY_TILT_NORMAL = 1;
+  static constexpr uint8_t LEGACY_TILT_INVERTED = 2;
+
+  // Which flick turns the page forward. The *_RIGHT_LEFT / *_BACK_FORWARD variants
+  // negate the axis; LEFT_RIGHT reproduces the legacy TILT_NORMAL behaviour exactly.
+  enum TILT_PAGE_TURN_DIRECTION {
+    TILT_LEFT_RIGHT = 0,
+    TILT_RIGHT_LEFT = 1,
+    TILT_FORWARD_BACK = 2,
+    TILT_BACK_FORWARD = 3,
+    TILT_PAGE_TURN_DIRECTION_COUNT
+  };
 
   enum TOUCH_READER_CONTROLS { TOUCH_READER_OFF = 0, TOUCH_READER_ON = 1, TOUCH_READER_CONTROLS_COUNT };
 
@@ -201,19 +275,33 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t textAntiAliasing = 1;
   // Short power button click behaviour
   uint8_t shortPwrBtn = IGNORE;
+  // Long power button hold behaviour. Sleep matches what a hold has always done.
+  uint8_t longPwrBtn = SLEEP;
   // EPUB reading orientation settings
   // 0 = portrait (default), 1 = landscape clockwise, 2 = inverted, 3 = landscape counter-clockwise
   uint8_t orientation = PORTRAIT;
   // Button layouts (front layout retained for migration only)
   uint8_t frontButtonLayout = BACK_CONFIRM_LEFT_RIGHT;
   uint8_t sideButtonLayout = PREV_NEXT;
-  uint8_t frontButtonFollowOrientation = 0;
+  // Supersedes frontButtonFollowOrientation, which fromJson() migrates into it.
+  uint8_t frontButtonOrientationAware = FRONT_ORIENTATION_AWARE_OFF;
+  // Swap the side buttons in the reader whenever the reader is not portrait.
+  uint8_t sideButtonOrientationAware = 0;
+  // Reader long-press action for the side buttons.
+  uint8_t sideButtonLongPress = SIDE_LONG_OFF;
   // Front button remap (logical -> hardware)
   // Used by MappedInputManager to translate logical buttons into physical front buttons.
   uint8_t frontButtonBack = FRONT_HW_BACK;
   uint8_t frontButtonConfirm = FRONT_HW_CONFIRM;
   uint8_t frontButtonLeft = FRONT_HW_LEFT;
   uint8_t frontButtonRight = FRONT_HW_RIGHT;
+  // Reader-only front button remap. While readerFrontButtonsEnabled is 0 the reader uses the
+  // system mapping above, so the defaults here are inert until the user opts in.
+  uint8_t readerFrontButtonsEnabled = 0;
+  uint8_t readerFrontButtonBack = FRONT_HW_BACK;
+  uint8_t readerFrontButtonConfirm = FRONT_HW_CONFIRM;
+  uint8_t readerFrontButtonLeft = FRONT_HW_LEFT;
+  uint8_t readerFrontButtonRight = FRONT_HW_RIGHT;
   // Reader font settings
   uint8_t fontFamily = NOTOSERIF;
   // Point size of the reader font. Only sizes the active family actually ships
@@ -245,9 +333,13 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t hideBatteryPercentage = HIDE_NEVER;
   // Long-press page turn button behavior
   uint8_t longPressButtonBehavior = OFF;
-  // Long-press Confirm function in EPUB reader (cycles through LONG_PRESS_MENU_FUNCTION values).
-  // Defaults to Disabled so shortcut-based bookmark toggling remains opt-in.
-  uint8_t longPressMenuFunction = LP_MENU_DISABLED;
+  // Long-press Confirm quick action in the reader. Defaults to off so shortcut-based
+  // bookmark toggling stays opt-in. Migrated from the legacy longPressMenuFunction.
+  uint8_t longPressMenuAction = LONG_ACTION_OFF;
+  // Long-press Back quick action in the reader. The default reproduces the existing
+  // behaviour, where holding Back opens the file browser (or home, when
+  // backShortToFileBrowser has swapped the two).
+  uint8_t longPressBackAction = LONG_ACTION_FILE_BROWSER;
   // UI Theme
   uint8_t uiTheme = LYRA;
   // Sunlight fading compensation
@@ -274,6 +366,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t imageRendering = IMAGES_DISPLAY;
   // Tilt-based page turning (X3 only — requires QMI8658 IMU)
   uint8_t tiltPageTurn = TILT_OFF;
+  uint8_t tiltPageTurnDirection = TILT_LEFT_RIGHT;
   // Touch screen reader zones/gestures on boards with a touch controller.
   uint8_t touchReaderControls = TOUCH_READER_ON;
   // Language setting (Language enum index, default 0 = EN)
@@ -347,6 +440,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   bool fromJson(JsonVariantConst doc);
 
   static void validateFrontButtonMapping(CrossPointSettings& settings);
+  static void validateReaderFrontButtonMapping(CrossPointSettings& settings);
   static uint8_t sleepTimeoutEnumToMinutes(uint8_t legacyValue);
 
   float getReaderLineCompression() const;
