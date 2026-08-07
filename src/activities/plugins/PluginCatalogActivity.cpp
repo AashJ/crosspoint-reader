@@ -417,6 +417,7 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.sidecarBody = dl["sidecar"]["body"] | "";
 
   JsonVariantConst auth = doc["auth"];
+  manifest.authType = auth["type"] | "device_code";
   manifest.authUrl = auth["request"]["url"] | "";
   manifest.authMethod = auth["request"]["method"] | "POST";
   manifest.authBody = auth["request"]["body"] | "";
@@ -588,9 +589,47 @@ void PluginCatalogActivity::launchWifiSelection() {
                          });
 }
 
+bool PluginCatalogActivity::refreshCredentialToken() {
+  loadConfig();
+  std::vector<std::pair<std::string, std::string>> headers;
+  headers.reserve(manifest.authHeaders.size());
+  for (const auto& h : manifest.authHeaders) headers.emplace_back(h.first, substituted(h.second, nullptr));
+  std::string response;
+  const int status = apiRequest(substituted(manifest.authUrl, nullptr), manifest.authMethod,
+                                substituted(manifest.authBody, nullptr), headers, response);
+  if (status < 200 || status >= 300) return false;
+  JsonDocument doc;
+  if (deserializeJson(doc, response) != DeserializationError::Ok) return false;
+  const std::string minted = variantToString(resolvePath(doc.as<JsonVariantConst>(), manifest.authTokenPath));
+  if (minted.empty() || !saveToken(minted)) return false;
+  token = minted;  // usable immediately, without re-reading the file
+  return true;
+}
+
+int PluginCatalogActivity::browseRequest(const std::string& urlTemplate, const std::string& bodyTemplate,
+                                         std::string& response) {
+  auto build = [&](std::string& url, std::string& body, std::vector<std::pair<std::string, std::string>>& headers) {
+    url = substituted(urlTemplate, nullptr);
+    body = substituted(bodyTemplate, nullptr);
+    headers.clear();
+    headers.reserve(manifest.browseHeaders.size());
+    for (const auto& h : manifest.browseHeaders) headers.emplace_back(h.first, substituted(h.second, nullptr));
+  };
+  std::string url, body;
+  std::vector<std::pair<std::string, std::string>> headers;
+  build(url, body, headers);
+  int status = apiRequest(url, manifest.browseMethod, body, headers, response);
+  // A password-grant token expires; on 401/403 mint a fresh one and retry once.
+  if ((status == 401 || status == 403) && manifest.hasPasswordGrant() && refreshCredentialToken()) {
+    build(url, body, headers);
+    status = apiRequest(url, manifest.browseMethod, body, headers, response);
+  }
+  return status;
+}
+
 void PluginCatalogActivity::fetchXmlList() {
   loadConfig();
-  if (!loadToken()) {
+  if (!loadToken() && !(manifest.hasPasswordGrant() && refreshCredentialToken())) {
     state = State::NO_TOKEN;
     requestUpdate();
     return;
@@ -603,13 +642,8 @@ void PluginCatalogActivity::fetchXmlList() {
   }
   if (browseCurrentUrl.empty()) browseCurrentUrl = substituted(manifest.browseUrl, nullptr);
 
-  const std::string body = substituted(manifest.browseBody, nullptr);
-  std::vector<std::pair<std::string, std::string>> headers;
-  headers.reserve(manifest.browseHeaders.size());
-  for (const auto& h : manifest.browseHeaders) headers.emplace_back(h.first, substituted(h.second, nullptr));
-
   std::string response;
-  const int status = apiRequest(browseCurrentUrl, manifest.browseMethod, body, headers, response);
+  const int status = browseRequest(browseCurrentUrl, manifest.browseBody, response);
   if (status == 401 || status == 403) {
     state = State::NO_TOKEN;
     requestUpdate();
@@ -706,21 +740,15 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
     return;
   }
   page = newPage;
-  if (!loadToken()) {
+  loadConfig();
+  if (!loadToken() && !(manifest.hasPasswordGrant() && refreshCredentialToken())) {
     state = State::NO_TOKEN;
     requestUpdate();
     return;
   }
 
-  loadConfig();
-  const std::string url = substituted(manifest.browseUrl, nullptr);
-  const std::string body = substituted(manifest.browseBody, nullptr);
-  std::vector<std::pair<std::string, std::string>> headers;
-  headers.reserve(manifest.browseHeaders.size());
-  for (const auto& h : manifest.browseHeaders) headers.emplace_back(h.first, substituted(h.second, nullptr));
-
   std::string response;
-  const int status = apiRequest(url, manifest.browseMethod, body, headers, response);
+  const int status = browseRequest(manifest.browseUrl, manifest.browseBody, response);
   if (status == 401 || status == 403) {
     // Stale or revoked token: back to the sign-in screen, not a raw error.
     state = State::NO_TOKEN;
@@ -913,6 +941,9 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
 
   const std::string dlUser = substituted(manifest.dlUser, &item);
   const std::string dlPass = substituted(manifest.dlPass, &item);
+  std::vector<std::pair<std::string, std::string>> dlHeaders;
+  dlHeaders.reserve(manifest.dlHeaders.size());
+  for (const auto& h : manifest.dlHeaders) dlHeaders.emplace_back(h.first, substituted(h.second, &item));
   int lastRenderedPercent = -1;
   unsigned long lastProgressUpdateMs = 0;
   const auto result = HttpDownloader::downloadToFile(
@@ -930,7 +961,7 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
           requestUpdate(true);
         }
       },
-      nullptr, dlUser, dlPass);
+      nullptr, dlUser, dlPass, dlHeaders);
 
   if (result != HttpDownloader::OK) {
     LOG_ERR("PCAT", "Download failed: %d", static_cast<int>(result));
@@ -987,7 +1018,7 @@ void PluginCatalogActivity::loop() {
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) || mappedInput.wasScreenTapped(tx, ty)) {
       if (WiFi.status() != WL_CONNECTED || WiFi.localIP() == IPAddress(0, 0, 0, 0)) {
         launchWifiSelection();
-      } else if (state == State::NO_TOKEN && manifest.hasAuth()) {
+      } else if (state == State::NO_TOKEN && manifest.hasDeviceCode()) {
         beginAuth();
       } else {
         state = State::LOADING;
@@ -1129,7 +1160,7 @@ void PluginCatalogActivity::render(RenderLock&&) {
   }
 
   if (state == State::ERROR || state == State::NO_TOKEN) {
-    const bool canSignIn = state == State::NO_TOKEN && manifest.hasAuth();
+    const bool canSignIn = state == State::NO_TOKEN && manifest.hasDeviceCode();
     if (state == State::NO_TOKEN) {
       renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2,
                                 canSignIn ? tr(STR_PLUGIN_SIGN_IN_HINT) : tr(STR_PLUGIN_NOT_SIGNED_IN));

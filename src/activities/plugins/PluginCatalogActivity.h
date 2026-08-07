@@ -75,9 +75,11 @@ class PluginCatalogActivity final : public Activity {
     // Optional sidecar written after a successful download; templates may use
     // {id}, {title}, {md5} (MD5 of the destination path).
     std::string sidecarPath, sidecarBody;
-    // Optional on-device sign-in (OAuth device-code flow). The request returns
-    // a user code + verification URL to show on-screen; poll templates may use
-    // {device_code}. On success the token is written to tokenFile at tokenPath.
+    // Optional on-device sign-in. "device_code": interactive OAuth device-code
+    // (shows a code + QR, polls). "password": a silent credential grant that
+    // mints a token from stored config credentials before browsing. Both write
+    // the token to tokenFile at tokenPath.
+    std::string authType;  // "device_code" (default) or "password"
     std::string authUrl, authMethod, authBody;
     std::vector<std::pair<std::string, std::string>> authHeaders;
     std::string pollUrl, pollMethod, pollBody;
@@ -85,7 +87,8 @@ class PluginCatalogActivity final : public Activity {
     std::string authCodePath, authVerifyPath, authDeviceCodePath;
     std::string authIntervalPath, authExpiresPath, authTokenPath, authErrorPath;
 
-    bool hasAuth() const { return !authUrl.empty() && !pollUrl.empty(); }
+    bool hasDeviceCode() const { return authType == "device_code" && !authUrl.empty() && !pollUrl.empty(); }
+    bool hasPasswordGrant() const { return authType == "password" && !authUrl.empty(); }
   };
 
   struct Item {
@@ -131,6 +134,10 @@ class PluginCatalogActivity final : public Activity {
   void downloadItem(const Item& item);
   void beginAuth();
   void pollAuth();
+  bool refreshCredentialToken();  // password grant: mint a token from config creds
+  // Substitutes + runs the browse request, retrying once after a fresh password
+  // grant on 401/403. Returns HTTP status (or -1 on transport failure).
+  int browseRequest(const std::string& urlTemplate, const std::string& bodyTemplate, std::string& response);
   // Returns the HTTP status, or -1 on transport failure / truncation / cap.
   // `out` holds the body for any real status (error bodies carry OAuth codes).
   int apiRequest(const std::string& url, const std::string& method, const std::string& body,

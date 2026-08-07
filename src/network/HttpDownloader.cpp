@@ -47,7 +47,8 @@ bool isRedirect(int status) {
 
 #if defined(FREEINK_NET_WOLFSSL)
 HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std::string& username,
-                                         const std::string& password, Sink& sink) {
+                                         const std::string& password,
+                                         const std::vector<HttpDownloader::Header>& headers, Sink& sink) {
   std::string url = startUrl;
 
   for (int hop = 0; hop <= MAX_REDIRECTS; ++hop) {
@@ -67,6 +68,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
       const String encoded = base64::encode(credentials.c_str());
       http.addHeader("Authorization", std::string("Basic ") + encoded.c_str());
     }
+    for (const auto& h : headers) http.addHeader(h.first, h.second);
 
     LOG_DBG("HTTP", "wolfSSL GET: %s", url.c_str());
     const int status = http.GET(
@@ -116,7 +118,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
 // that ends early as ESP_ERR_HTTP_INCOMPLETE_DATA, whereas the read loop streams
 // large/slow files and surfaces a short read directly.
 HttpDownloader::DownloadError runGet(const std::string& url, const std::string& username, const std::string& password,
-                                     Sink& sink) {
+                                     const std::vector<HttpDownloader::Header>& headers, Sink& sink) {
   esp_http_client_config_t config = {};
   config.url = url.c_str();
   config.buffer_size = HTTP_RX_BUF;
@@ -144,6 +146,7 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
     const String header = "Basic " + base64::encode(credentials.c_str());
     esp_http_client_set_header(client, "Authorization", header.c_str());
   }
+  for (const auto& h : headers) esp_http_client_set_header(client, h.first.c_str(), h.second.c_str());
 
   // open()/read() does not auto-follow redirects (only perform() does), so step
   // 30x responses manually. OPDS download endpoints and the GitHub release CDN
@@ -221,11 +224,12 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
 // mbedTLS path fails to connect or stalls mid-stream. Plain-http URLs still use a
 // WiFiClient inside runGetWolf, so this is safe for non-TLS targets too.
 HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::string& username,
-                                           const std::string& password, Sink& sink) {
+                                           const std::string& password,
+                                           const std::vector<HttpDownloader::Header>& headers, Sink& sink) {
 #if defined(FREEINK_NET_WOLFSSL)
-  return runGetWolf(url, username, password, sink);
+  return runGetWolf(url, username, password, headers, sink);
 #else
-  return runGet(url, username, password, sink);
+  return runGet(url, username, password, headers, sink);
 #endif
 }
 }  // namespace
@@ -235,7 +239,7 @@ bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent, const 
   LOG_DBG("HTTP", "Fetching: %s", url.c_str());
   Sink sink;
   sink.write = [&outContent](const uint8_t* data, size_t len) { return outContent.write(data, len) == len; };
-  return runGetSecure(url, username, password, sink) == OK;
+  return runGetSecure(url, username, password, {}, sink) == OK;
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent, const std::string& username,
@@ -247,7 +251,7 @@ bool HttpDownloader::fetchUrl(const std::string& url, std::string& outContent, c
     outContent.append(reinterpret_cast<const char*>(data), len);
     return true;
   };
-  return runGetSecure(url, username, password, sink) == OK;
+  return runGetSecure(url, username, password, {}, sink) == OK;
 }
 
 bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username,
@@ -255,12 +259,13 @@ bool HttpDownloader::fetchUrl(const std::string& url, const DataCallback& onData
   LOG_DBG("HTTP", "Fetching: %s", url.c_str());
   Sink sink;
   sink.write = onData;
-  return runGetSecure(url, username, password, sink) == OK;
+  return runGetSecure(url, username, password, {}, sink) == OK;
 }
 
 HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& url, const std::string& destPath,
                                                              ProgressCallback progress, bool* cancelFlag,
-                                                             const std::string& username, const std::string& password) {
+                                                             const std::string& username, const std::string& password,
+                                                             const std::vector<Header>& headers) {
   LOG_DBG("HTTP", "Downloading: %s -> %s", url.c_str(), destPath.c_str());
 
   if (Storage.exists(destPath.c_str())) {
@@ -277,7 +282,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   sink.cancelFlag = cancelFlag;
   sink.write = [&file](const uint8_t* data, size_t len) { return file.write(data, len) == len; };
 
-  const DownloadError result = runGetSecure(url, username, password, sink);
+  const DownloadError result = runGetSecure(url, username, password, headers, sink);
   // Close before any remove() on the same path; DESTRUCTOR_CLOSES_FILE would
   // otherwise close only after the remove.
   file.close();

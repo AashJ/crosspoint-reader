@@ -155,12 +155,12 @@ Two browse formats:
   "download": {
     "url": "https://.../books/{id}/download",
     "method": "POST",
-    "headers": { ... },
+    "headers": { "Authorization": "Bearer {token}" },  // sent on the file GET too
     "body": "{}",
     "url_path": "url",                      // response field with the file URL;
                                             // omit to treat "url" itself as the file URL
     "username": "{cfg.user}",              // optional HTTP Basic creds for the file GET
-    "password": "{cfg.pass}",             // (webdav); omit for token/header auth
+    "password": "{cfg.pass}",             // omit for token/header auth
     "dest_dir": "/ServiceName",             // created if missing; falls back to SD root
     "filename": "{title}.epub",             // {title} is filesystem-sanitized here
     "sidecar": {                            // optional per-book metadata file
@@ -169,28 +169,45 @@ Two browse formats:
     }
   },
 
-  "auth": {                                 // optional on-device OAuth device-code flow
+  "auth": {                                 // optional on-device sign-in
+    "type": "device_code",                  // or "password"
+
+    // device_code (interactive: shows a code + QR, polls until authorized):
     "request": { "url": "...", "method": "POST", "headers": { ... }, "body": "..." },
     "poll":    { "url": "...", "method": "POST", "headers": { ... },
                  "body": "{...\"device_code\":\"{device_code}\"}" },
-    // response field paths, with their defaults:
+    // device_code response field paths, with their defaults:
     "code_path": "user_code", "verify_url_path": "verification_uri",
     "device_code_path": "device_code", "interval_path": "interval",
     "expires_path": "expires_in", "token_path": "access_token",
     "error_path": "error"
+
+    // password (silent: mints a token from stored config credentials — for
+    // OAuth2 password grants and login-returns-token APIs). Only "request" and
+    // "token_path" apply; no user interaction:
+    //   "type": "password",
+    //   "request": { "url": "{cfg.url}/oauth/v2/token", "method": "POST",
+    //                "headers": {...}, "body": "...{cfg.username}...{cfg.password}..." },
+    //   "token_path": "access_token"
   }
 }
 ```
 
 ### Behavior
 
-- **Sign-in**: with an `auth` block, the not-signed-in screen offers Sign in on
-  the device: it shows the verification URL (text + QR) and user code, then
-  polls until authorized, honoring `authorization_pending`, `slow_down`,
+- **Sign-in (`device_code`)**: the not-signed-in screen offers Sign in on the
+  device: it shows the verification URL (text + QR) and user code, then polls
+  until authorized, honoring `authorization_pending`, `slow_down`,
   `expired_token`, and `access_denied`. The token is written to `token.file`
   in the shape `token.path` expects, so the web plugin and the device share
-  one sign-in. Without an `auth` block the screen directs the user to the web
-  plugin instead.
+  one sign-in.
+- **Sign-in (`password`)**: no on-device UI — the device silently POSTs the
+  stored config credentials to the token endpoint before browsing, and re-mints
+  a fresh token automatically after any 401 (these tokens are short-lived).
+  Credentials come from a browser `plugin.js` writing the `config.file`. Set it
+  up once on the web page; the reader is then standalone.
+- Without an `auth` block the not-signed-in screen directs the user to the web
+  plugin.
 - **Stale tokens**: a 401/403 from browse returns to the sign-in screen rather
   than an error.
 - **Pagination** (json): the browse request should return up to `{limit}`
