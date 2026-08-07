@@ -26,6 +26,13 @@ void copyToField(char* dest, const char* src, const size_t maxLen) {
   dest[maxLen - 1] = '\0';
 }
 
+// A stored ENUM value is valid if it is one the option list can actually produce. Without
+// enumRawValues that is any index below the option count; with them, only a listed raw value.
+bool isEnumRawValueAllowed(const SettingInfo& info, const uint8_t value) {
+  if (info.enumRawValues.empty()) return value < settingEnumOptionCount(info);
+  return std::find(info.enumRawValues.begin(), info.enumRawValues.end(), value) != info.enumRawValues.end();
+}
+
 }  // namespace
 
 void CrossPointSettings::validateFrontButtonMapping(CrossPointSettings& settings) {
@@ -159,7 +166,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
       const uint8_t fieldDefault = s.*(info.valuePtr);  // struct-initializer default, read before we overwrite it
       uint8_t v = doc[info.key] | fieldDefault;
       if (info.type == SettingType::ENUM) {
-        v = clamp(v, (uint8_t)info.enumValues.size(), fieldDefault);
+        if (!isEnumRawValueAllowed(info, v)) v = fieldDefault;
       } else if (info.type == SettingType::TOGGLE) {
         v = clamp(v, (uint8_t)2, fieldDefault);
       } else if (info.type == SettingType::VALUE) {

@@ -319,20 +319,29 @@ void SettingsActivity::toggleCurrentSetting() {
     const bool currentValue = SETTINGS.*(setting.valuePtr);
     SETTINGS.*(setting.valuePtr) = !currentValue;
   } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
-    const uint8_t currentValue = SETTINGS.*(setting.valuePtr);
-    if (setting.enumValues.size() > 2) {
+    const uint8_t optionCount = static_cast<uint8_t>(settingEnumOptionCount(setting));
+    if (optionCount == 0) return;
+    const uint8_t currentIndex = settingEnumDisplayIndexForRawValue(setting, SETTINGS.*(setting.valuePtr));
+    if (optionCount > 2) {
       const auto valuePtr = setting.valuePtr;
-      optionPopup.show(setting.nameId, setting.enumValues.data(), static_cast<int>(setting.enumValues.size()),
-                       currentValue, [this, valuePtr, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
-                         SETTINGS.*valuePtr = idx;
-                         syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
-                         SETTINGS.saveToFile();
-                         rebuildSettingsLists();
-                       });
+      const auto rawValues = setting.enumRawValues;
+      optionPopup.show(
+          setting.nameId, setting.enumValues.data(), static_cast<int>(setting.enumValues.size()), currentIndex,
+          [this, valuePtr, rawValues, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
+            // The popup outlives the list rebuild that invalidates `setting`, so it
+            // carries its own copy of the raw values rather than capturing the entry.
+            SETTINGS.*valuePtr =
+                rawValues.empty() ? static_cast<uint8_t>(idx)
+                                  : (static_cast<size_t>(idx) < rawValues.size() ? rawValues[idx] : rawValues.front());
+            syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
+            SETTINGS.saveToFile();
+            rebuildSettingsLists();
+          });
       requestUpdate();
       return;
     }
-    SETTINGS.*(setting.valuePtr) = (currentValue + 1) % static_cast<uint8_t>(setting.enumValues.size());
+    SETTINGS.*(setting.valuePtr) =
+        settingEnumRawValueForDisplayIndex(setting, static_cast<uint8_t>((currentIndex + 1) % optionCount));
   } else if (setting.type == SettingType::ENUM && setting.valueGetter && setting.valueSetter) {
     const uint8_t totalValues = setting.enumStringValues.empty()
                                     ? static_cast<uint8_t>(setting.enumValues.size())
@@ -498,8 +507,10 @@ void SettingsActivity::render(RenderLock&&) {
           const bool value = SETTINGS.*(setting.valuePtr);
           valueText = value ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
         } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
-          const uint8_t value = SETTINGS.*(setting.valuePtr);
-          valueText = I18N.get(setting.enumValues[value]);
+          const uint8_t index = settingEnumDisplayIndexForRawValue(setting, SETTINGS.*(setting.valuePtr));
+          if (index < setting.enumValues.size()) {
+            valueText = I18N.get(setting.enumValues[index]);
+          }
         } else if (setting.type == SettingType::ENUM && setting.valueGetter) {
           const uint8_t value = setting.valueGetter();
           if (!setting.enumStringValues.empty() && value < setting.enumStringValues.size()) {

@@ -1,6 +1,8 @@
 #pragma once
 #include <I18n.h>
 
+#include <algorithm>
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
@@ -32,6 +34,10 @@ struct SettingInfo {
   SettingType type;
   uint8_t CrossPointSettings::* valuePtr = nullptr;
   std::vector<StrId> enumValues;
+  // Persisted value for each option, when the display order differs from it. Empty means the
+  // two coincide: option N is stored as N. Populating it lets options be reordered or gapped
+  // without shifting what is already in settings.json — see the enum helpers below.
+  std::vector<uint8_t> enumRawValues;
   std::vector<std::string> enumStringValues;  // runtime alternative to StrId enumValues (for SD card fonts etc.)
   SettingAction action = SettingAction::None;
 
@@ -64,6 +70,11 @@ struct SettingInfo {
 
   SettingInfo& withTextSettings() {
     inTextSettings = true;
+    return *this;
+  }
+
+  SettingInfo& withEnumRawValues(std::vector<uint8_t> values) {
+    enumRawValues = std::move(values);
     return *this;
   }
 
@@ -149,6 +160,34 @@ struct SettingInfo {
     return s;
   }
 };
+
+// ENUM settings are addressed two ways: by *display index* (the option's position in the picker,
+// which the device UI and the web API both speak) and by *raw value* (what lands in settings.json).
+// They are the same number unless enumRawValues is populated. Everything that reads or writes an
+// ENUM must translate through these three helpers rather than assuming the identity mapping.
+
+// Counted off the label list rather than enumRawValues, so the count is always safe to index
+// into whichever of the two label arrays a caller renders from.
+inline size_t settingEnumOptionCount(const SettingInfo& setting) {
+  if (!setting.enumStringValues.empty()) return setting.enumStringValues.size();
+  if (!setting.enumValues.empty()) return setting.enumValues.size();
+  return setting.enumRawValues.size();
+}
+
+// Unknown raw values fall back to the first option: a value dropped from the list (a
+// device-gated action, a stale settings.json) must still resolve to something displayable.
+inline uint8_t settingEnumDisplayIndexForRawValue(const SettingInfo& setting, const uint8_t rawValue) {
+  if (setting.enumRawValues.empty()) return rawValue;
+  const auto it = std::find(setting.enumRawValues.begin(), setting.enumRawValues.end(), rawValue);
+  if (it == setting.enumRawValues.end()) return 0;
+  return static_cast<uint8_t>(std::distance(setting.enumRawValues.begin(), it));
+}
+
+inline uint8_t settingEnumRawValueForDisplayIndex(const SettingInfo& setting, const uint8_t displayIndex) {
+  if (setting.enumRawValues.empty()) return displayIndex;
+  if (displayIndex >= setting.enumRawValues.size()) return setting.enumRawValues.front();
+  return setting.enumRawValues[displayIndex];
+}
 
 class SettingsActivity final : public Activity {
   ButtonNavigator buttonNavigator;

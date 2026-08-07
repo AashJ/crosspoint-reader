@@ -1196,8 +1196,10 @@ void CrossPointWebServer::handleGetSettings() const {
       }
       case SettingType::ENUM: {
         doc["type"] = "enum";
+        // The web contract is index-based, so a setting whose display order differs from its
+        // persisted values is translated here rather than leaking raw values to the browser.
         if (s.valuePtr) {
-          doc["value"] = static_cast<int>(SETTINGS.*(s.valuePtr));
+          doc["value"] = static_cast<int>(settingEnumDisplayIndexForRawValue(s, SETTINGS.*(s.valuePtr)));
         } else if (s.valueGetter) {
           doc["value"] = static_cast<int>(s.valueGetter());
         }
@@ -1289,11 +1291,10 @@ void CrossPointWebServer::handlePostSettings() {
       }
       case SettingType::ENUM: {
         const int val = doc[s.key].as<int>();
-        const int maxVal = s.enumStringValues.empty() ? static_cast<int>(s.enumValues.size())
-                                                      : static_cast<int>(s.enumStringValues.size());
+        const int maxVal = static_cast<int>(settingEnumOptionCount(s));
         if (val >= 0 && val < maxVal) {
           if (s.valuePtr) {
-            SETTINGS.*(s.valuePtr) = static_cast<uint8_t>(val);
+            SETTINGS.*(s.valuePtr) = settingEnumRawValueForDisplayIndex(s, static_cast<uint8_t>(val));
           } else if (s.valueSetter) {
             s.valueSetter(static_cast<uint8_t>(val));
           }
