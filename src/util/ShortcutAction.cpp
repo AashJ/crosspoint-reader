@@ -8,59 +8,31 @@
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 
-ShortcutAction shortcutFromPowerButtonSetting(const uint8_t value) {
+ShortcutAction shortcutActionFromRawValue(const uint8_t value) {
   switch (value) {
-    case CrossPointSettings::SLEEP:
+    case shortcutActionRawValue(ShortcutAction::Sleep):
       return ShortcutAction::Sleep;
-    case CrossPointSettings::PAGE_TURN:
+    case shortcutActionRawValue(ShortcutAction::PageTurn):
       return ShortcutAction::PageTurn;
-    case CrossPointSettings::FORCE_REFRESH:
+    case shortcutActionRawValue(ShortcutAction::RefreshScreen):
       return ShortcutAction::RefreshScreen;
-    case CrossPointSettings::FOOTNOTES:
+    case shortcutActionRawValue(ShortcutAction::Footnotes):
       return ShortcutAction::Footnotes;
-    case CrossPointSettings::TOGGLE_BOOKMARK:
+    case shortcutActionRawValue(ShortcutAction::ToggleBookmark):
       return ShortcutAction::ToggleBookmark;
-    case CrossPointSettings::SYNC_PROGRESS:
+    case shortcutActionRawValue(ShortcutAction::SyncProgress):
       return ShortcutAction::SyncProgress;
-    case CrossPointSettings::SCREENSHOT:
+    case shortcutActionRawValue(ShortcutAction::Screenshot):
       return ShortcutAction::Screenshot;
-    case CrossPointSettings::FILE_BROWSER:
+    case shortcutActionRawValue(ShortcutAction::FileBrowser):
       return ShortcutAction::FileBrowser;
-    case CrossPointSettings::LOOKUP_WORD:
+    case shortcutActionRawValue(ShortcutAction::LookUpWord):
       return ShortcutAction::LookUpWord;
-    case CrossPointSettings::FILE_TRANSFER:
+    case shortcutActionRawValue(ShortcutAction::FileTransfer):
       return ShortcutAction::FileTransfer;
-    case CrossPointSettings::TOGGLE_TILT_PAGE_TURN:
+    case shortcutActionRawValue(ShortcutAction::ToggleTiltPageTurn):
       return ShortcutAction::ToggleTiltPageTurn;
-    case CrossPointSettings::IGNORE:
-    default:
-      return ShortcutAction::None;
-  }
-}
-
-ShortcutAction shortcutFromLongPressSetting(const uint8_t value) {
-  switch (value) {
-    case CrossPointSettings::LONG_ACTION_SLEEP:
-      return ShortcutAction::Sleep;
-    case CrossPointSettings::LONG_ACTION_REFRESH_SCREEN:
-      return ShortcutAction::RefreshScreen;
-    case CrossPointSettings::LONG_ACTION_TOGGLE_BOOKMARK:
-      return ShortcutAction::ToggleBookmark;
-    case CrossPointSettings::LONG_ACTION_SYNC_PROGRESS:
-      return ShortcutAction::SyncProgress;
-    case CrossPointSettings::LONG_ACTION_LOOKUP_WORD:
-      return ShortcutAction::LookUpWord;
-    case CrossPointSettings::LONG_ACTION_FOOTNOTES:
-      return ShortcutAction::Footnotes;
-    case CrossPointSettings::LONG_ACTION_SCREENSHOT:
-      return ShortcutAction::Screenshot;
-    case CrossPointSettings::LONG_ACTION_FILE_BROWSER:
-      return ShortcutAction::FileBrowser;
-    case CrossPointSettings::LONG_ACTION_FILE_TRANSFER:
-      return ShortcutAction::FileTransfer;
-    case CrossPointSettings::LONG_ACTION_TOGGLE_TILT_PAGE_TURN:
-      return ShortcutAction::ToggleTiltPageTurn;
-    case CrossPointSettings::LONG_ACTION_OFF:
+    case shortcutActionRawValue(ShortcutAction::None):
     default:
       return ShortcutAction::None;
   }

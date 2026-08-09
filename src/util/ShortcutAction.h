@@ -4,29 +4,26 @@
 
 class GfxRenderer;
 
-// One action space for every configurable shortcut.
-//
-// The power button and the reader long-press bindings are persisted as two separate enums with
-// different numbering (see CrossPointSettings::SHORT_PWRBTN and LONG_PRESS_ACTION). Both are
-// translated into this type at the point of use, so every dispatcher switches over one enum
-// instead of repeating a near-identical switch per binding.
+// One stable persisted action space for every configurable shortcut. Values 0..4 preserve the
+// historical short-power meanings; append new actions without renumbering existing ones.
 enum class ShortcutAction : uint8_t {
-  None,
-  Sleep,
-  PageTurn,
-  RefreshScreen,
-  Footnotes,
-  ToggleBookmark,
-  SyncProgress,
-  LookUpWord,
-  Screenshot,
-  FileBrowser,
-  FileTransfer,
-  ToggleTiltPageTurn,
+  None = 0,
+  Sleep = 1,
+  PageTurn = 2,
+  RefreshScreen = 3,
+  Footnotes = 4,
+  ToggleBookmark = 5,
+  SyncProgress = 6,
+  Screenshot = 7,
+  FileBrowser = 8,
+  LookUpWord = 9,
+  FileTransfer = 10,
+  ToggleTiltPageTurn = 11,
 };
 
-ShortcutAction shortcutFromPowerButtonSetting(uint8_t value);
-ShortcutAction shortcutFromLongPressSetting(uint8_t value);
+constexpr uint8_t shortcutActionRawValue(const ShortcutAction action) { return static_cast<uint8_t>(action); }
+
+ShortcutAction shortcutActionFromRawValue(uint8_t value);
 
 // True when the action needs no open book, and so can run from anywhere. The rest are
 // reader-only: they are ignored outside a reader rather than doing something surprising.

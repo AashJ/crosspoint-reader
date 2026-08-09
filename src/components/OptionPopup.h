@@ -49,6 +49,15 @@ class OptionPopup {
     active = true;
   }
 
+  void show(StrId titleId, std::vector<std::string>&& options, int currentIndex, std::function<void(int)> onSelect) {
+    title = I18N.get(titleId);
+    ownedStrings = std::move(options);
+    selectedIndex = currentIndex;
+    onSelectCallback = std::move(onSelect);
+    layoutValid = false;
+    active = true;
+  }
+
   bool handleInput(MappedInputManager& input, const std::function<void()>& requestUpdate) {
     if (!active) return false;
 

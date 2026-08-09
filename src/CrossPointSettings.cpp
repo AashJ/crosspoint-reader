@@ -4,7 +4,6 @@
 #include <Logging.h>
 #include <ObfuscationUtils.h>
 
-#include <algorithm>
 #include <cstring>
 #include <iterator>
 #include <string>
@@ -24,13 +23,6 @@ constexpr size_t OBF_KEY_BUF = 64;
 void copyToField(char* dest, const char* src, const size_t maxLen) {
   strncpy(dest, src, maxLen - 1);
   dest[maxLen - 1] = '\0';
-}
-
-// A stored ENUM value is valid if it is one the option list can actually produce. Without
-// enumRawValues that is any index below the option count; with them, only a listed raw value.
-bool isEnumRawValueAllowed(const SettingInfo& info, const uint8_t value) {
-  if (info.enumRawValues.empty()) return value < settingEnumOptionCount(info);
-  return std::find(info.enumRawValues.begin(), info.enumRawValues.end(), value) != info.enumRawValues.end();
 }
 
 }  // namespace
@@ -186,7 +178,7 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
       const uint8_t fieldDefault = s.*(info.valuePtr);  // struct-initializer default, read before we overwrite it
       uint8_t v = doc[info.key] | fieldDefault;
       if (info.type == SettingType::ENUM) {
-        if (!isEnumRawValueAllowed(info, v)) v = fieldDefault;
+        if (!info.isEnumRawValueAllowed(v)) v = fieldDefault;
       } else if (info.type == SettingType::TOGGLE) {
         v = clamp(v, (uint8_t)2, fieldDefault);
       } else if (info.type == SettingType::VALUE) {
@@ -257,17 +249,17 @@ bool CrossPointSettings::fromJson(JsonVariantConst doc) {
   if (doc["longPressMenuAction"].isNull() && !doc["longPressMenuFunction"].isNull()) {
     switch (doc["longPressMenuFunction"] | (uint8_t)LP_MENU_DISABLED) {
       case LP_MENU_KOSYNC:
-        longPressMenuAction = LONG_ACTION_SYNC_PROGRESS;
+        longPressMenuAction = shortcutActionRawValue(ShortcutAction::SyncProgress);
         break;
       case LP_MENU_BOOKMARK:
-        longPressMenuAction = LONG_ACTION_TOGGLE_BOOKMARK;
+        longPressMenuAction = shortcutActionRawValue(ShortcutAction::ToggleBookmark);
         break;
       case LP_MENU_DICTIONARY:
-        longPressMenuAction = LONG_ACTION_LOOKUP_WORD;
+        longPressMenuAction = shortcutActionRawValue(ShortcutAction::LookUpWord);
         break;
       case LP_MENU_DISABLED:
       default:
-        longPressMenuAction = LONG_ACTION_OFF;
+        longPressMenuAction = shortcutActionRawValue(ShortcutAction::None);
         break;
     }
     needsResave = true;

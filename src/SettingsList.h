@@ -15,46 +15,38 @@
 #include "CrossPointSettings.h"
 #include "KOReaderCredentialStore.h"
 #include "ReaderFontSizes.h"
-#include "activities/settings/SettingsActivity.h"
+#include "SettingInfo.h"
 #include "util/DictionaryRegistry.h"
+#include "util/ShortcutAction.h"
 
 // Build the font family setting dynamically. When registry is non-null, SD card fonts
 // are appended after the built-in fonts. Otherwise only built-in fonts are listed.
 inline SettingInfo buildFontFamilySetting(const SdCardFontRegistry* registry) {
-  // Built-in font labels (StrId)
-  std::vector<StrId> enumValues = {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS};
   // Runtime string labels for SD card fonts
-  std::vector<std::string> enumStringValues;
+  std::vector<std::string> sdFontLabels;
 
   // Reserve: first CrossPointSettings::BUILTIN_FONT_COUNT entries use StrId, rest use strings
   if (registry) {
     const auto& families = registry->getFamilies();
-    enumStringValues.reserve(families.size());
-    std::transform(families.begin(), families.end(), std::back_inserter(enumStringValues),
+    sdFontLabels.reserve(families.size());
+    std::transform(families.begin(), families.end(), std::back_inserter(sdFontLabels),
                    [](const SdCardFontFamilyInfo& f) { return f.name; });
   }
 
   // Capture the SD font count for the lambdas
-  const int sdFontCount = static_cast<int>(enumStringValues.size());
+  const int sdFontCount = static_cast<int>(sdFontLabels.size());
 
-  // Total option count = built-in + SD card families
-  // For the combined enumStringValues: we need all entries as strings (built-in names + SD names)
-  // The render code checks enumStringValues first, then enumValues. So we build enumStringValues
-  // with all options when SD fonts are present.
+  // Runtime labels cover both built-in and SD options when SD fonts are present.
   std::vector<std::string> allStringValues;
   if (sdFontCount > 0) {
     allStringValues.push_back(I18N.get(StrId::STR_NOTO_SERIF));
     allStringValues.push_back(I18N.get(StrId::STR_NOTO_SANS));
-    allStringValues.insert(allStringValues.end(), enumStringValues.begin(), enumStringValues.end());
+    allStringValues.insert(allStringValues.end(), sdFontLabels.begin(), sdFontLabels.end());
   }
 
-  SettingInfo s;
-  s.nameId = StrId::STR_FONT_FAMILY;
-  s.type = SettingType::ENUM;
-  s.enumValues = std::move(enumValues);
-  s.enumStringValues = std::move(allStringValues);
-  s.key = "fontFamily";
-  s.category = StrId::STR_CAT_READER;
+  SettingInfo s = SettingInfo::Enum(StrId::STR_FONT_FAMILY, nullptr, {StrId::STR_NOTO_SERIF, StrId::STR_NOTO_SANS},
+                                    "fontFamily", StrId::STR_CAT_READER);
+  s.setEnumStringValues(std::move(allStringValues));
   s.inTextSettings = true;  // matches the static font-family entry it replaces
 
   // Capture registry families by copy for the lambdas
@@ -114,12 +106,8 @@ inline SettingInfo buildFontSizeSetting(const SdCardFontRegistry* registry) {
     labels.push_back(std::to_string(pt) + " pt");
   }
 
-  SettingInfo s;
-  s.nameId = StrId::STR_FONT_SIZE;
-  s.type = SettingType::ENUM;
-  s.enumStringValues = std::move(labels);
-  s.key = "fontSize";
-  s.category = StrId::STR_CAT_READER;
+  SettingInfo s = SettingInfo::Enum(StrId::STR_FONT_SIZE, nullptr, {}, "fontSize", StrId::STR_CAT_READER);
+  s.setEnumStringValues(std::move(labels));
   s.inTextSettings = true;  // matches the static font-size entry it replaces
 
   s.valueGetter = [sizes]() -> uint8_t {
@@ -147,13 +135,13 @@ inline SettingInfo buildDictionarySetting(const std::vector<DictionaryEntry>& di
   std::transform(dictionaries.begin(), dictionaries.end(), std::back_inserter(folderNames),
                  [](const DictionaryEntry& d) { return d.name; });
 
-  SettingInfo s;
-  s.nameId = StrId::STR_DICTIONARY;
-  s.type = SettingType::ENUM;
-  s.enumStringValues.reserve(folderNames.size() + 1);
-  s.enumStringValues.push_back(I18N.get(StrId::STR_NONE_OPT));
-  s.enumStringValues.insert(s.enumStringValues.end(), folderNames.begin(), folderNames.end());
-  s.category = StrId::STR_CAT_READER;
+  std::vector<std::string> labels;
+  labels.reserve(folderNames.size() + 1);
+  labels.push_back(I18N.get(StrId::STR_NONE_OPT));
+  labels.insert(labels.end(), folderNames.begin(), folderNames.end());
+
+  SettingInfo s = SettingInfo::Enum(StrId::STR_DICTIONARY, nullptr, {}, nullptr, StrId::STR_CAT_READER);
+  s.setEnumStringValues(std::move(labels));
 
   s.valueGetter = [folderNames]() -> uint8_t {
     for (size_t i = 0; i < folderNames.size(); i++) {
@@ -180,50 +168,45 @@ inline SettingInfo buildDictionarySetting(const std::vector<DictionaryEntry>& di
 
 // Power-button shortcut options, shared by the short- and long-press settings.
 //
-// The display order is grouped by usefulness rather than by enum value, so the labels and the
-// persisted values are supplied as two parallel arrays and reconciled through enumRawValues.
+// The display order is grouped by usefulness rather than by persisted value.
 // Only actions the reader can execute today are listed; the enum carries no entry we cannot run.
 inline SettingInfo buildPowerButtonActionSetting(StrId nameId, uint8_t CrossPointSettings::* valuePtr,
                                                  const char* key) {
-  std::vector<StrId> labels = {StrId::STR_IGNORE,          StrId::STR_SLEEP,           StrId::STR_PAGE_TURN,
-                               StrId::STR_FORCE_REFRESH,   StrId::STR_BOOKMARK_OPTION, StrId::STR_SYNC_PROGRESS,
-                               StrId::STR_TAKE_SCREENSHOT, StrId::STR_FOOTNOTES,       StrId::STR_BROWSE_FILES,
-                               StrId::STR_FILE_TRANSFER,   StrId::STR_LOOK_UP_WORD};
-  std::vector<uint8_t> raw = {
-      CrossPointSettings::IGNORE,        CrossPointSettings::SLEEP,           CrossPointSettings::PAGE_TURN,
-      CrossPointSettings::FORCE_REFRESH, CrossPointSettings::TOGGLE_BOOKMARK, CrossPointSettings::SYNC_PROGRESS,
-      CrossPointSettings::SCREENSHOT,    CrossPointSettings::FOOTNOTES,       CrossPointSettings::FILE_BROWSER,
-      CrossPointSettings::FILE_TRANSFER, CrossPointSettings::LOOKUP_WORD};
+  SettingEnumOptions options({{StrId::STR_IGNORE, shortcutActionRawValue(ShortcutAction::None)},
+                              {StrId::STR_SLEEP, shortcutActionRawValue(ShortcutAction::Sleep)},
+                              {StrId::STR_PAGE_TURN, shortcutActionRawValue(ShortcutAction::PageTurn)},
+                              {StrId::STR_FORCE_REFRESH, shortcutActionRawValue(ShortcutAction::RefreshScreen)},
+                              {StrId::STR_BOOKMARK_OPTION, shortcutActionRawValue(ShortcutAction::ToggleBookmark)},
+                              {StrId::STR_SYNC_PROGRESS, shortcutActionRawValue(ShortcutAction::SyncProgress)},
+                              {StrId::STR_TAKE_SCREENSHOT, shortcutActionRawValue(ShortcutAction::Screenshot)},
+                              {StrId::STR_FOOTNOTES, shortcutActionRawValue(ShortcutAction::Footnotes)},
+                              {StrId::STR_BROWSE_FILES, shortcutActionRawValue(ShortcutAction::FileBrowser)},
+                              {StrId::STR_FILE_TRANSFER, shortcutActionRawValue(ShortcutAction::FileTransfer)},
+                              {StrId::STR_LOOK_UP_WORD, shortcutActionRawValue(ShortcutAction::LookUpWord)}},
+                             1);
   if (halTiltSensor.isAvailable()) {
-    labels.push_back(StrId::STR_TOGGLE_TILT_PAGE_TURN);
-    raw.push_back(CrossPointSettings::TOGGLE_TILT_PAGE_TURN);
+    options.add(StrId::STR_TOGGLE_TILT_PAGE_TURN, shortcutActionRawValue(ShortcutAction::ToggleTiltPageTurn));
   }
-  return SettingInfo::Enum(nameId, valuePtr, std::move(labels), key, StrId::STR_CAT_CONTROLS)
-      .withEnumRawValues(std::move(raw));
+  return SettingInfo::MappedEnum(nameId, valuePtr, std::move(options), key, StrId::STR_CAT_CONTROLS);
 }
 
 // Reader long-press quick actions, shared by the Confirm and Back long-press settings.
 inline SettingInfo buildLongPressActionSetting(StrId nameId, uint8_t CrossPointSettings::* valuePtr, const char* key) {
-  std::vector<StrId> labels = {StrId::STR_STATE_OFF,       StrId::STR_SLEEP,         StrId::STR_FORCE_REFRESH,
-                               StrId::STR_BOOKMARK_OPTION, StrId::STR_SYNC_PROGRESS, StrId::STR_TAKE_SCREENSHOT,
-                               StrId::STR_FOOTNOTES,       StrId::STR_BROWSE_FILES,  StrId::STR_FILE_TRANSFER,
-                               StrId::STR_LOOK_UP_WORD};
-  std::vector<uint8_t> raw = {CrossPointSettings::LONG_ACTION_OFF,
-                              CrossPointSettings::LONG_ACTION_SLEEP,
-                              CrossPointSettings::LONG_ACTION_REFRESH_SCREEN,
-                              CrossPointSettings::LONG_ACTION_TOGGLE_BOOKMARK,
-                              CrossPointSettings::LONG_ACTION_SYNC_PROGRESS,
-                              CrossPointSettings::LONG_ACTION_SCREENSHOT,
-                              CrossPointSettings::LONG_ACTION_FOOTNOTES,
-                              CrossPointSettings::LONG_ACTION_FILE_BROWSER,
-                              CrossPointSettings::LONG_ACTION_FILE_TRANSFER,
-                              CrossPointSettings::LONG_ACTION_LOOKUP_WORD};
+  SettingEnumOptions options({{StrId::STR_STATE_OFF, shortcutActionRawValue(ShortcutAction::None)},
+                              {StrId::STR_SLEEP, shortcutActionRawValue(ShortcutAction::Sleep)},
+                              {StrId::STR_FORCE_REFRESH, shortcutActionRawValue(ShortcutAction::RefreshScreen)},
+                              {StrId::STR_BOOKMARK_OPTION, shortcutActionRawValue(ShortcutAction::ToggleBookmark)},
+                              {StrId::STR_SYNC_PROGRESS, shortcutActionRawValue(ShortcutAction::SyncProgress)},
+                              {StrId::STR_TAKE_SCREENSHOT, shortcutActionRawValue(ShortcutAction::Screenshot)},
+                              {StrId::STR_FOOTNOTES, shortcutActionRawValue(ShortcutAction::Footnotes)},
+                              {StrId::STR_BROWSE_FILES, shortcutActionRawValue(ShortcutAction::FileBrowser)},
+                              {StrId::STR_FILE_TRANSFER, shortcutActionRawValue(ShortcutAction::FileTransfer)},
+                              {StrId::STR_LOOK_UP_WORD, shortcutActionRawValue(ShortcutAction::LookUpWord)}},
+                             1);
   if (halTiltSensor.isAvailable()) {
-    labels.push_back(StrId::STR_TOGGLE_TILT_PAGE_TURN);
-    raw.push_back(CrossPointSettings::LONG_ACTION_TOGGLE_TILT_PAGE_TURN);
+    options.add(StrId::STR_TOGGLE_TILT_PAGE_TURN, shortcutActionRawValue(ShortcutAction::ToggleTiltPageTurn));
   }
-  return SettingInfo::Enum(nameId, valuePtr, std::move(labels), key, StrId::STR_CAT_CONTROLS)
-      .withEnumRawValues(std::move(raw));
+  return SettingInfo::MappedEnum(nameId, valuePtr, std::move(options), key, StrId::STR_CAT_CONTROLS);
 }
 
 // Shared settings list used by both the device settings UI and the web settings API.
@@ -239,26 +222,17 @@ inline SettingInfo buildLongPressActionSetting(StrId nameId, uint8_t CrossPointS
 inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* registry = nullptr,
                                                 const std::vector<DictionaryEntry>* dictionaries = nullptr) {
   static const std::vector<SettingInfo> baseList = [] {
-    // Enum settings are persisted as numeric values. Assign these labels by enum
-    // value so a reordered menu or enum cannot silently swap their behavior.
-    std::vector<StrId> sleepScreenValues(CrossPointSettings::SLEEP_SCREEN_MODE_COUNT);
-    sleepScreenValues[CrossPointSettings::DARK] = StrId::STR_DARK;
-    sleepScreenValues[CrossPointSettings::LIGHT] = StrId::STR_LIGHT;
-    sleepScreenValues[CrossPointSettings::CUSTOM] = StrId::STR_CUSTOM;
-    sleepScreenValues[CrossPointSettings::COVER] = StrId::STR_COVER;
-    sleepScreenValues[CrossPointSettings::COVER_CUSTOM] = StrId::STR_COVER_CUSTOM;
-    sleepScreenValues[CrossPointSettings::BLANK] = StrId::STR_NONE_OPT;
-    sleepScreenValues[CrossPointSettings::QUICK_RESUME] = StrId::STR_QUICK_RESUME;
-
-    std::vector<StrId> statusBarClockValues(CrossPointSettings::STATUS_BAR_CLOCK_MODE_COUNT);
-    statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_HIDE] = StrId::STR_HIDE;
-    statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_RIGHT] = StrId::STR_DIR_RIGHT;
-    statusBarClockValues[CrossPointSettings::STATUS_BAR_CLOCK_LEFT] = StrId::STR_DIR_LEFT;
-
     std::vector<SettingInfo> v = {
         // --- Display ---
-        SettingInfo::Enum(StrId::STR_SLEEP_SCREEN, &CrossPointSettings::sleepScreen, std::move(sleepScreenValues),
-                          "sleepScreen", StrId::STR_CAT_DISPLAY),
+        SettingInfo::MappedEnum(StrId::STR_SLEEP_SCREEN, &CrossPointSettings::sleepScreen,
+                                {{StrId::STR_DARK, CrossPointSettings::DARK},
+                                 {StrId::STR_LIGHT, CrossPointSettings::LIGHT},
+                                 {StrId::STR_CUSTOM, CrossPointSettings::CUSTOM},
+                                 {StrId::STR_COVER, CrossPointSettings::COVER},
+                                 {StrId::STR_COVER_CUSTOM, CrossPointSettings::COVER_CUSTOM},
+                                 {StrId::STR_NONE_OPT, CrossPointSettings::BLANK},
+                                 {StrId::STR_QUICK_RESUME, CrossPointSettings::QUICK_RESUME}},
+                                "sleepScreen", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_SLEEP_COVER_MODE, &CrossPointSettings::sleepScreenCoverMode,
                           {StrId::STR_FIT, StrId::STR_CROP}, "sleepScreenCoverMode", StrId::STR_CAT_DISPLAY),
         SettingInfo::Enum(StrId::STR_SLEEP_COVER_FILTER, &CrossPointSettings::sleepScreenCoverFilter,
@@ -350,11 +324,12 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                             "backShortToFileBrowser", StrId::STR_CAT_CONTROLS),
 
         // --- Controls: Side Buttons ---
-        SettingInfo::Enum(StrId::STR_SIDE_BTN_LAYOUT, &CrossPointSettings::sideButtonLayout,
-                          {StrId::STR_PREV_NEXT, StrId::STR_NEXT_PREV, StrId::STR_NEXT_NEXT, StrId::STR_DISABLED},
-                          "sideButtonLayout", StrId::STR_CAT_CONTROLS)
-            .withEnumRawValues({CrossPointSettings::PREV_NEXT, CrossPointSettings::NEXT_PREV,
-                                CrossPointSettings::NEXT_NEXT, CrossPointSettings::SIDE_BUTTONS_DISABLED}),
+        SettingInfo::MappedEnum(StrId::STR_SIDE_BTN_LAYOUT, &CrossPointSettings::sideButtonLayout,
+                                {{StrId::STR_PREV_NEXT, CrossPointSettings::PREV_NEXT},
+                                 {StrId::STR_NEXT_PREV, CrossPointSettings::NEXT_PREV},
+                                 {StrId::STR_NEXT_NEXT, CrossPointSettings::NEXT_NEXT},
+                                 {StrId::STR_DISABLED, CrossPointSettings::SIDE_BUTTONS_DISABLED}},
+                                "sideButtonLayout", StrId::STR_CAT_CONTROLS),
         SettingInfo::Toggle(StrId::STR_ORIENTATION_AWARE, &CrossPointSettings::sideButtonOrientationAware,
                             "sideButtonOrientationAware", StrId::STR_CAT_CONTROLS),
         SettingInfo::Enum(StrId::STR_LONG_PRESS_ACTION, &CrossPointSettings::sideButtonLongPress,
@@ -455,8 +430,11 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                           StrId::STR_CUSTOMISE_STATUS_BAR),
         // Clock entries (web settings only; device UI uses ClockOffsetActivity for the offset).
         // Range 0..104 = quarter-hour steps from UTC-12:00 to UTC+14:00, biased by 48.
-        SettingInfo::Enum(StrId::STR_CLOCK, &CrossPointSettings::statusBarClock, std::move(statusBarClockValues),
-                          "statusBarClock", StrId::STR_CUSTOMISE_STATUS_BAR),
+        SettingInfo::MappedEnum(StrId::STR_CLOCK, &CrossPointSettings::statusBarClock,
+                                {{StrId::STR_HIDE, CrossPointSettings::STATUS_BAR_CLOCK_HIDE},
+                                 {StrId::STR_DIR_RIGHT, CrossPointSettings::STATUS_BAR_CLOCK_RIGHT},
+                                 {StrId::STR_DIR_LEFT, CrossPointSettings::STATUS_BAR_CLOCK_LEFT}},
+                                "statusBarClock", StrId::STR_CUSTOMISE_STATUS_BAR),
         SettingInfo::Value(StrId::STR_CLOCK_UTC_OFFSET, &CrossPointSettings::clockUtcOffsetQ, {0, 104, 1},
                            "clockUtcOffsetQ", StrId::STR_CUSTOMISE_STATUS_BAR),
         SettingInfo::Enum(StrId::STR_CLOCK_FORMAT, &CrossPointSettings::clockFormat,

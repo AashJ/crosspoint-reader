@@ -1164,9 +1164,9 @@ void CrossPointWebServer::handleSettingsPage() const {
 }
 
 void CrossPointWebServer::handleGetSettings() const {
-  // Pass the SD font registry so the fontFamily setting's enumStringValues
+  // Pass the SD font registry so the fontFamily setting's runtime labels
   // includes SD-resident families — otherwise the web API only exposes the
-  // three built-in fonts.
+  // two built-in fonts.
   const auto& settings = getSettingsList(&sdFontSystem.registry());
 
   server->setContentLength(CONTENT_LENGTH_UNKNOWN);
@@ -1199,18 +1199,18 @@ void CrossPointWebServer::handleGetSettings() const {
         // The web contract is index-based, so a setting whose display order differs from its
         // persisted values is translated here rather than leaking raw values to the browser.
         if (s.valuePtr) {
-          doc["value"] = static_cast<int>(settingEnumDisplayIndexForRawValue(s, SETTINGS.*(s.valuePtr)));
+          doc["value"] = static_cast<int>(s.enumDisplayIndexForRawValue(SETTINGS.*(s.valuePtr)));
         } else if (s.valueGetter) {
           doc["value"] = static_cast<int>(s.valueGetter());
         }
         JsonArray options = doc["options"].to<JsonArray>();
-        if (!s.enumStringValues.empty()) {
-          for (const auto& opt : s.enumStringValues) {
+        if (s.hasEnumStringValues()) {
+          for (const auto& opt : s.getEnumStringValues()) {
             options.add(opt);
           }
         } else {
-          for (const auto& opt : s.enumValues) {
-            options.add(I18N.get(opt));
+          for (size_t i = 0; i < s.enumOptionCount(); i++) {
+            options.add(I18N.get(s.enumLabelAt(i)));
           }
         }
         break;
@@ -1291,10 +1291,10 @@ void CrossPointWebServer::handlePostSettings() {
       }
       case SettingType::ENUM: {
         const int val = doc[s.key].as<int>();
-        const int maxVal = static_cast<int>(settingEnumOptionCount(s));
+        const int maxVal = static_cast<int>(s.enumOptionCount());
         if (val >= 0 && val < maxVal) {
           if (s.valuePtr) {
-            SETTINGS.*(s.valuePtr) = settingEnumRawValueForDisplayIndex(s, static_cast<uint8_t>(val));
+            SETTINGS.*(s.valuePtr) = s.enumRawValueForDisplayIndex(static_cast<uint8_t>(val));
           } else if (s.valueSetter) {
             s.valueSetter(static_cast<uint8_t>(val));
           }

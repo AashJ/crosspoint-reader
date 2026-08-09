@@ -9,6 +9,7 @@
 
 #include "MappedInputManager.h"
 #include "activities/ActivityManager.h"
+#include "util/ShortcutAction.h"
 
 namespace ReaderUtils {
 
@@ -69,8 +70,9 @@ inline PageTurnResult detectPageTurn(const MappedInputManager& input) {
                                      : input.wasReleased(MappedInputManager::Button::PageForward);
 
   const bool powerReleased = input.wasReleased(MappedInputManager::Button::Power);
-  const bool powerTurn = powerReleased && (SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN ||
-                                           SETTINGS.longPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN);
+  const uint8_t pageTurnAction = shortcutActionRawValue(ShortcutAction::PageTurn);
+  const bool powerTurn =
+      powerReleased && (SETTINGS.shortPwrBtn == pageTurnAction || SETTINGS.longPwrBtn == pageTurnAction);
   const bool frontPrev = frontUsePress ? input.wasPressed(prevButton) : input.wasReleased(prevButton);
   const bool frontNext = (frontUsePress ? input.wasPressed(nextButton) : input.wasReleased(nextButton)) || powerTurn;
 

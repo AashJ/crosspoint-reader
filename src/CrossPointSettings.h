@@ -5,6 +5,8 @@
 
 #include <cstdint>
 
+#include "util/ShortcutAction.h"
+
 class CrossPointSettings : public PersistableStore<CrossPointSettings> {
  private:
   // Private constructor for singleton
@@ -155,26 +157,6 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     REFRESH_FREQUENCY_COUNT
   };
 
-  // Power button shortcut actions, shared by shortPwrBtn and longPwrBtn.
-  // Values 0..4 are the historical CrossPoint set and MUST keep their meanings — in particular
-  // 4 stays FOOTNOTES, which is where CrossInk's numbering diverges. New actions are appended,
-  // and the settings list reorders them for display via enumRawValues.
-  enum SHORT_PWRBTN {
-    IGNORE = 0,
-    SLEEP = 1,
-    PAGE_TURN = 2,
-    FORCE_REFRESH = 3,
-    FOOTNOTES = 4,
-    TOGGLE_BOOKMARK = 5,
-    SYNC_PROGRESS = 6,
-    SCREENSHOT = 7,
-    FILE_BROWSER = 8,
-    LOOKUP_WORD = 9,
-    FILE_TRANSFER = 10,
-    TOGGLE_TILT_PAGE_TURN = 11,
-    SHORT_PWRBTN_COUNT
-  };
-
   // Legacy long-press Confirm setting, superseded by LONG_PRESS_MENU_ACTION.
   // Retained only so fromJson() can migrate longPressMenuFunction into longPressMenuAction.
   enum LONG_PRESS_MENU_FUNCTION {
@@ -183,23 +165,6 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
     LP_MENU_BOOKMARK = 2,
     LP_MENU_DICTIONARY = 3,
     LONG_PRESS_MENU_FUNCTION_COUNT
-  };
-
-  // Reader long-press quick actions, shared by longPressMenuAction (Confirm) and
-  // longPressBackAction (Back). Append only — these are persisted by value.
-  enum LONG_PRESS_ACTION {
-    LONG_ACTION_OFF = 0,
-    LONG_ACTION_SLEEP = 1,
-    LONG_ACTION_REFRESH_SCREEN = 2,
-    LONG_ACTION_TOGGLE_BOOKMARK = 3,
-    LONG_ACTION_SYNC_PROGRESS = 4,
-    LONG_ACTION_LOOKUP_WORD = 5,
-    LONG_ACTION_FOOTNOTES = 6,
-    LONG_ACTION_SCREENSHOT = 7,
-    LONG_ACTION_FILE_BROWSER = 8,
-    LONG_ACTION_FILE_TRANSFER = 9,
-    LONG_ACTION_TOGGLE_TILT_PAGE_TURN = 10,
-    LONG_PRESS_ACTION_COUNT
   };
 
   // Hide battery percentage
@@ -273,9 +238,9 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t extraParagraphSpacing = 1;
   uint8_t textAntiAliasing = 1;
   // Short power button click behaviour
-  uint8_t shortPwrBtn = IGNORE;
+  uint8_t shortPwrBtn = shortcutActionRawValue(ShortcutAction::None);
   // Long power button hold behaviour. Sleep matches what a hold has always done.
-  uint8_t longPwrBtn = SLEEP;
+  uint8_t longPwrBtn = shortcutActionRawValue(ShortcutAction::Sleep);
   // EPUB reading orientation settings
   // 0 = portrait (default), 1 = landscape clockwise, 2 = inverted, 3 = landscape counter-clockwise
   uint8_t orientation = PORTRAIT;
@@ -334,11 +299,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   uint8_t longPressButtonBehavior = OFF;
   // Long-press Confirm quick action in the reader. Defaults to off so shortcut-based
   // bookmark toggling stays opt-in. Migrated from the legacy longPressMenuFunction.
-  uint8_t longPressMenuAction = LONG_ACTION_OFF;
+  uint8_t longPressMenuAction = shortcutActionRawValue(ShortcutAction::None);
   // Long-press Back quick action in the reader. The default reproduces the existing
   // behaviour, where holding Back opens the file browser (or home, when
   // backShortToFileBrowser has swapped the two).
-  uint8_t longPressBackAction = LONG_ACTION_FILE_BROWSER;
+  uint8_t longPressBackAction = shortcutActionRawValue(ShortcutAction::FileBrowser);
   // UI Theme
   uint8_t uiTheme = LYRA;
   // Sunlight fading compensation
@@ -384,7 +349,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   void* sdFontResolverCtx = nullptr;
 
   uint16_t getPowerButtonDuration() const {
-    return (shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP) ? 10 : 400;
+    return shortPwrBtn == shortcutActionRawValue(ShortcutAction::Sleep) ? 10 : 400;
   }
   int getReaderFontId() const;
 

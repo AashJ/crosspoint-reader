@@ -531,7 +531,7 @@ void EpubReaderActivity::loop() {
   // Confirm release is left alone, so it still opens the reader menu as usual.
   if (mappedInput.isPressed(MappedInputManager::Button::Confirm) && !ignoreNextConfirmRelease &&
       mappedInput.getHeldTime() >= ReaderUtils::BOOKMARK_HOLD_MS) {
-    if (runReaderShortcut(shortcutFromLongPressSetting(SETTINGS.longPressMenuAction))) {
+    if (runReaderShortcut(shortcutActionFromRawValue(SETTINGS.longPressMenuAction))) {
       ignoreNextConfirmRelease = true;
       return;
     }
@@ -547,12 +547,12 @@ void EpubReaderActivity::loop() {
   // Long-press Back runs the configured quick action. FILE_BROWSER means "leave it alone" —
   // that is the navigation handleBackNavigation() already performs, together with
   // backShortToFileBrowser.
-  if (SETTINGS.longPressBackAction != CrossPointSettings::LONG_ACTION_FILE_BROWSER) {
+  if (SETTINGS.longPressBackAction != shortcutActionRawValue(ShortcutAction::FileBrowser)) {
     if (mappedInput.isPressed(MappedInputManager::Button::Back) &&
         mappedInput.getHeldTime() >= ReaderUtils::GO_BACK_OR_HOME_MS) {
       if (!backActionFired) {
         backActionFired = true;
-        runReaderShortcut(shortcutFromLongPressSetting(SETTINGS.longPressBackAction));
+        runReaderShortcut(shortcutActionFromRawValue(SETTINGS.longPressBackAction));
       }
       return;  // Absorb the rest of the hold so it cannot also navigate.
     }
@@ -573,9 +573,9 @@ void EpubReaderActivity::loop() {
   // main loop; these need an open book, so they are handled here.
   if (mappedInput.wasReleased(MappedInputManager::Button::Power) &&
       !mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-    const auto shortAction = shortcutFromPowerButtonSetting(SETTINGS.shortPwrBtn);
+    const auto shortAction = shortcutActionFromRawValue(SETTINGS.shortPwrBtn);
     const bool wasHold = mappedInput.getHeldTime() > SETTINGS.getPowerButtonDuration();
-    const auto action = wasHold ? shortcutFromPowerButtonSetting(SETTINGS.longPwrBtn) : shortAction;
+    const auto action = wasHold ? shortcutActionFromRawValue(SETTINGS.longPwrBtn) : shortAction;
     if (!isShortcutAvailableOutsideReader(action) && runReaderShortcut(action)) {
       return;
     }

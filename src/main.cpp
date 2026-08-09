@@ -321,7 +321,7 @@ void setup() {
     case HalGPIO::WakeupReason::PowerButton:
       LOG_DBG("MAIN", "Verifying power button press duration");
       if (!gpio.verifyPowerButtonWakeup(SETTINGS.getPowerButtonDuration(),
-                                        SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP)) {
+                                        SETTINGS.shortPwrBtn == shortcutActionRawValue(ShortcutAction::Sleep))) {
         powerManager.startDeepSleep(gpio);
       }
       break;
@@ -462,7 +462,7 @@ void loop() {
   const unsigned long loopStartTime = millis();
   static unsigned long lastMemPrint = 0;
 
-  gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
+  gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == shortcutActionRawValue(ShortcutAction::Sleep));
   gpio.update();
   const bool inReader = activityManager.isReaderActivity();
   mappedInputManager.setReaderMode(inReader);
@@ -548,7 +548,7 @@ void loop() {
       // Latched even for reader-only actions, so the release that ends the hold does not also
       // fire the short-press action on top.
       longPowerActionFired = true;
-      const auto action = shortcutFromPowerButtonSetting(SETTINGS.longPwrBtn);
+      const auto action = shortcutActionFromRawValue(SETTINGS.longPwrBtn);
       if (isShortcutAvailableOutsideReader(action) && runGlobalShortcut(action, renderer)) {
         // Sleep never returns here — it calls esp_deep_sleep_start.
         return;
@@ -557,7 +557,7 @@ void loop() {
   } else if (mappedInputManager.wasReleased(MappedInputManager::Button::Power)) {
     const bool consumedByHold = longPowerActionFired;
     longPowerActionFired = false;
-    const auto action = shortcutFromPowerButtonSetting(SETTINGS.shortPwrBtn);
+    const auto action = shortcutActionFromRawValue(SETTINGS.shortPwrBtn);
     if (!consumedByHold && isShortcutAvailableOutsideReader(action)) {
       runGlobalShortcut(action, renderer);
     }

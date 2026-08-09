@@ -26,6 +26,22 @@
 #include "activities/util/IntervalSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/ShortcutAction.h"
+
+namespace {
+
+std::vector<std::string> buildEnumDisplayLabels(const SettingInfo& setting) {
+  if (setting.hasEnumStringValues()) return setting.getEnumStringValues();
+
+  std::vector<std::string> labels;
+  labels.reserve(setting.enumOptionCount());
+  for (size_t i = 0; i < setting.enumOptionCount(); i++) {
+    labels.emplace_back(I18N.get(setting.enumLabelAt(i)));
+  }
+  return labels;
+}
+
+}  // namespace
 
 const StrId SettingsActivity::categoryNames[categoryCount] = {StrId::STR_CAT_DISPLAY, StrId::STR_CAT_READER,
                                                               StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
@@ -104,10 +120,10 @@ void SettingsActivity::buildControlsLists() {
   const bool hasFrontButtons = !BoardConfig::hasTouch();
 
   // Quick-return from footnotes only means anything while some shortcut can open them.
-  const bool anyFootnoteShortcut = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::FOOTNOTES ||
-                                   SETTINGS.longPwrBtn == CrossPointSettings::SHORT_PWRBTN::FOOTNOTES ||
-                                   SETTINGS.longPressMenuAction == CrossPointSettings::LONG_ACTION_FOOTNOTES ||
-                                   SETTINGS.longPressBackAction == CrossPointSettings::LONG_ACTION_FOOTNOTES;
+  const uint8_t footnotesAction = shortcutActionRawValue(ShortcutAction::Footnotes);
+  const bool anyFootnoteShortcut = SETTINGS.shortPwrBtn == footnotesAction || SETTINGS.longPwrBtn == footnotesAction ||
+                                   SETTINGS.longPressMenuAction == footnotesAction ||
+                                   SETTINGS.longPressBackAction == footnotesAction;
 
   // Quick-return from footnotes is the one Controls entry that hides itself: it is meaningless
   // unless a shortcut can open footnotes in the first place.
@@ -431,33 +447,26 @@ void SettingsActivity::toggleCurrentSetting() {
     const bool currentValue = SETTINGS.*(setting.valuePtr);
     SETTINGS.*(setting.valuePtr) = !currentValue;
   } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
-    const uint8_t optionCount = static_cast<uint8_t>(settingEnumOptionCount(setting));
+    const uint8_t optionCount = static_cast<uint8_t>(setting.enumOptionCount());
     if (optionCount == 0) return;
-    const uint8_t currentIndex = settingEnumDisplayIndexForRawValue(setting, SETTINGS.*(setting.valuePtr));
+    const uint8_t currentIndex = setting.enumDisplayIndexForRawValue(SETTINGS.*(setting.valuePtr));
     if (optionCount > 2) {
       const auto valuePtr = setting.valuePtr;
-      const auto rawValues = setting.enumRawValues;
-      optionPopup.show(
-          setting.nameId, setting.enumValues.data(), static_cast<int>(setting.enumValues.size()), currentIndex,
-          [this, valuePtr, rawValues, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
-            // The popup outlives the list rebuild that invalidates `setting`, so it
-            // carries its own copy of the raw values rather than capturing the entry.
-            SETTINGS.*valuePtr =
-                rawValues.empty() ? static_cast<uint8_t>(idx)
-                                  : (static_cast<size_t>(idx) < rawValues.size() ? rawValues[idx] : rawValues.front());
-            syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
-            SETTINGS.saveToFile();
-            rebuildSettingsLists();
-          });
+      const auto options = setting.enumOptionsSnapshot();
+      optionPopup.show(setting.nameId, buildEnumDisplayLabels(setting), currentIndex,
+                       [this, valuePtr, options, sleepScreenChanged, quickResumeTimeoutChanged](int idx) {
+                         SETTINGS.*valuePtr = options.rawValueForDisplayIndex(static_cast<uint8_t>(idx));
+                         syncQuickResumeTimeoutForSleepScreen(sleepScreenChanged, quickResumeTimeoutChanged);
+                         SETTINGS.saveToFile();
+                         rebuildSettingsLists();
+                       });
       requestUpdate();
       return;
     }
-    SETTINGS.*(setting.valuePtr) =
-        settingEnumRawValueForDisplayIndex(setting, static_cast<uint8_t>((currentIndex + 1) % optionCount));
+    SETTINGS.*(setting.valuePtr) = setting.enumRawValueForDisplayIndex((currentIndex + 1) % optionCount);
   } else if (setting.type == SettingType::ENUM && setting.valueGetter && setting.valueSetter) {
-    const uint8_t totalValues = setting.enumStringValues.empty()
-                                    ? static_cast<uint8_t>(setting.enumValues.size())
-                                    : static_cast<uint8_t>(setting.enumStringValues.size());
+    const uint8_t totalValues = static_cast<uint8_t>(setting.enumOptionCount());
+    if (totalValues == 0) return;
     const uint8_t cur = setting.valueGetter();
     if (totalValues > 2) {
       const auto valueSetter = setting.valueSetter;
@@ -467,12 +476,7 @@ void SettingsActivity::toggleCurrentSetting() {
         SETTINGS.saveToFile();
         rebuildSettingsLists();
       };
-      if (!setting.enumStringValues.empty()) {
-        optionPopup.show(setting.nameId, setting.enumStringValues, cur, std::move(onSelect));
-      } else {
-        optionPopup.show(setting.nameId, setting.enumValues.data(), static_cast<int>(setting.enumValues.size()), cur,
-                         std::move(onSelect));
-      }
+      optionPopup.show(setting.nameId, buildEnumDisplayLabels(setting), cur, std::move(onSelect));
       requestUpdate();
       return;
     }
@@ -635,16 +639,16 @@ void SettingsActivity::render(RenderLock&&) {
           const bool value = SETTINGS.*(setting.valuePtr);
           valueText = value ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
         } else if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
-          const uint8_t index = settingEnumDisplayIndexForRawValue(setting, SETTINGS.*(setting.valuePtr));
-          if (index < setting.enumValues.size()) {
-            valueText = I18N.get(setting.enumValues[index]);
+          const uint8_t index = setting.enumDisplayIndexForRawValue(SETTINGS.*(setting.valuePtr));
+          if (index < setting.enumOptionCount()) {
+            valueText = I18N.get(setting.enumLabelAt(index));
           }
         } else if (setting.type == SettingType::ENUM && setting.valueGetter) {
           const uint8_t value = setting.valueGetter();
-          if (!setting.enumStringValues.empty() && value < setting.enumStringValues.size()) {
-            valueText = setting.enumStringValues[value];
-          } else if (value < setting.enumValues.size()) {
-            valueText = I18N.get(setting.enumValues[value]);
+          if (setting.hasEnumStringValues() && value < setting.getEnumStringValues().size()) {
+            valueText = setting.getEnumStringValues()[value];
+          } else if (value < setting.enumOptionCount()) {
+            valueText = I18N.get(setting.enumLabelAt(value));
           }
         } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
           if (setting.nameId == StrId::STR_TIME_TO_SLEEP) {
