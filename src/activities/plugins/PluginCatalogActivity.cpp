@@ -467,6 +467,10 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.dlPass = dl["password"] | "";
   manifest.destDir = dl["dest_dir"] | "";
   manifest.filenameTpl = dl["filename"] | "{title}.epub";
+  // Multi-file bundle install (generic): base URL + a files array per item.
+  manifest.bundleBasePath = dl["bundle"]["base"] | "";
+  manifest.bundleFilesPath = dl["bundle"]["files"] | "";
+  manifest.bundleSubdir = dl["bundle"]["subdir"] | "{id}";
   // XML-list items already carry the file URL; default the template to it.
   if (manifest.isXmlList() && manifest.dlUrl.empty()) manifest.dlUrl = "{url}";
   manifest.sidecarPath = dl["sidecar"]["path"] | "";
@@ -839,6 +843,8 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
   addFieldFilter(filter, manifest.itemsPath, manifest.authorPath);
   addFieldFilter(filter, manifest.itemsPath, manifest.idPath);
   addFieldFilter(filter, manifest.itemsPath, manifest.urlPath);
+  addFieldFilter(filter, manifest.itemsPath, manifest.bundleBasePath);
+  addFieldFilter(filter, manifest.itemsPath, manifest.bundleFilesPath);
 
   JsonDocument doc;
   if (deserializeJson(doc, response, DeserializationOption::Filter(filter)) != DeserializationError::Ok) {
@@ -862,6 +868,16 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
       item.author = variantToString(resolvePath(v, manifest.authorPath));
       item.id = variantToString(resolvePath(v, manifest.idPath));
       item.url = variantToString(resolvePath(v, manifest.urlPath));
+      if (manifest.isBundle()) {
+        item.base = variantToString(resolvePath(v, manifest.bundleBasePath));
+        JsonArrayConst fileArr = resolvePath(v, manifest.bundleFilesPath).as<JsonArrayConst>();
+        if (!fileArr.isNull()) {
+          item.files.reserve(fileArr.size());
+          for (JsonVariantConst f : fileArr) {
+            if (f.is<const char*>()) item.files.emplace_back(f.as<const char*>());
+          }
+        }
+      }
       if (!item.title.empty()) items.push_back(std::move(item));
     }
   }
@@ -965,6 +981,61 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
   statusMessage = item.title;
   downloadProgress = downloadTotal = 0;
   requestUpdate(true);
+
+  // Multi-file bundle install: fetch every file in item.files from item.base
+  // into destDir/<subdir>/, creating intermediate folders. Progress advances
+  // per file. Generic (a plugin installer, a theme pack, ...).
+  if (manifest.isBundle() && !item.files.empty()) {
+    const std::string subdir = substituted(manifest.bundleSubdir, &item);
+    // Reject path traversal in the subdir (a hostile catalog could escape).
+    if (subdir.empty() || subdir.find("..") != std::string::npos || subdir.front() == '/') {
+      state = State::ERROR;
+      errorMessage = tr(STR_DOWNLOAD_FAILED);
+      requestUpdate();
+      return;
+    }
+    std::string dir = manifest.destDir;
+    if (!dir.empty() && dir.back() == '/') dir.pop_back();
+    dir += '/';
+    dir += subdir;
+    if (!Storage.exists(dir.c_str()) && !Storage.mkdir(dir.c_str())) {
+      LOG_ERR("PCAT", "bundle mkdir failed: %s", dir.c_str());
+      state = State::ERROR;
+      errorMessage = tr(STR_DOWNLOAD_FAILED);
+      requestUpdate();
+      return;
+    }
+    std::string base = item.base;
+    if (!base.empty() && base.back() != '/') base += '/';
+    const size_t total = item.files.size();
+    for (size_t i = 0; i < total; i++) {
+      std::string rel = item.files[i];
+      while (!rel.empty() && rel.front() == '/') rel.erase(rel.begin());
+      if (rel.empty() || rel.find("..") != std::string::npos) continue;  // skip unsafe entries
+      downloadProgress = i;
+      downloadTotal = total;
+      requestUpdate(true);
+      const std::string dest = dir + "/" + rel;
+      // Create any intermediate folders for nested files ("assets/icon.bin").
+      const size_t slash = dest.find_last_of('/');
+      if (slash != std::string::npos) {
+        const std::string parent = dest.substr(0, slash);
+        if (!Storage.exists(parent.c_str())) Storage.mkdir(parent.c_str());
+      }
+      const auto res = HttpDownloader::downloadToFile(base + rel, dest);
+      if (res != HttpDownloader::OK) {
+        LOG_ERR("PCAT", "bundle file failed: %s (%d)", rel.c_str(), static_cast<int>(res));
+        state = State::ERROR;
+        errorMessage = tr(STR_DOWNLOAD_FAILED);
+        requestUpdate();
+        return;
+      }
+    }
+    state = State::DONE;
+    statusMessage = item.title;
+    requestUpdate();
+    return;
+  }
 
   // Resolve the file URL: either the template itself, or one API hop away.
   std::string fileUrl = substituted(manifest.dlUrl, &item);

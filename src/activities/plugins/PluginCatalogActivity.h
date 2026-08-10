@@ -80,6 +80,14 @@ class PluginCatalogActivity final : public Activity {
     // Optional HTTP Basic credentials for the file GET; templates.
     std::string dlUser, dlPass;
     std::string destDir, filenameTpl;
+    // Optional multi-file "bundle" download: instead of one file, the selected
+    // item carries a base URL and a JSON array of relative paths, and every file
+    // is fetched into destDir/<subdir>/. Generic (a plugin installer, a theme
+    // pack, ...); when bundleFilesPath is set it replaces the single-file path.
+    // bundleBasePath/bundleFilesPath are dotted field paths within the item;
+    // bundleSubdir is a template (default {id}).
+    std::string bundleBasePath, bundleFilesPath, bundleSubdir;
+    bool isBundle() const { return !bundleFilesPath.empty(); }
     // Optional sidecar written after a successful download; templates may use
     // {id}, {title}, {md5} (MD5 of the destination path).
     std::string sidecarPath, sidecarBody;
@@ -102,6 +110,9 @@ class PluginCatalogActivity final : public Activity {
   struct Item {
     std::string title, author, id, url;
     bool isDir = false;  // a container/folder (navigable), not a downloadable file
+    // Bundle download only: base URL + relative file paths for this item.
+    std::string base;
+    std::vector<std::string> files;
   };
 
   std::string manifestPath;
