@@ -1507,10 +1507,10 @@ void PluginCatalogActivity::render(RenderLock&&) {
     return;
   }
 
-  // BROWSING / LIST_PICKER: one list body. Pager rows bracket the items,
-  // styled like the OPDS browser's navigation entries ("> " prefix):
-  // "Previous page" ahead of the items past page 1, "Next page" after them
-  // while more pages exist — tappable and button-reachable like any row.
+  // BROWSING / LIST_PICKER: one list body. Pager rows bracket the items:
+  // "« Previous page" ahead of the items past page 1, "Next page »" after
+  // them while more pages exist — tappable and button-reachable like any
+  // row. The direction markers come from the translated strings themselves.
   const ListLayout layout = GUI.getListLayout(renderer, /*hasSubtitle=*/true);
   const int count = rowCount();
   const int prevOff = prevRowVisible() ? 1 : 0;
@@ -1525,9 +1525,11 @@ void PluginCatalogActivity::render(RenderLock&&) {
   } else {
     const bool onDir = manifest.isXmlList() && itemSel >= 0 && itemSel < static_cast<int>(items.size()) &&
                        items[itemSel].isDir;
-    confirmLabel = items.empty() ? "" : (onDir ? tr(STR_OPEN) : tr(STR_DOWNLOAD));
+    confirmLabel = items.empty() ? "" : (onDir ? tr(STR_OPEN) : tr(STR_FETCH));
   }
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, "", "");
+  const char* up = count > 1 ? tr(STR_DIR_UP) : "";
+  const char* down = count > 1 ? tr(STR_DIR_DOWN) : "";
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, up, down);
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   if (count == 0) {
@@ -1537,9 +1539,9 @@ void PluginCatalogActivity::render(RenderLock&&) {
         renderer, layout.list, count, selectorIndex,
         [this, prevOff](int i) -> std::string {
           if (state == State::LIST_PICKER) return manifest.browseLists[i].title;
-          if (prevOff && i == 0) return std::string("> ") + tr(STR_PREV_PAGE);
+          if (prevOff && i == 0) return tr(STR_PREV_PAGE);
           const int item = i - prevOff;
-          if (item >= static_cast<int>(items.size())) return std::string("> ") + tr(STR_NEXT_PAGE);
+          if (item >= static_cast<int>(items.size())) return tr(STR_NEXT_PAGE);
           return manifest.isXmlList() && items[item].isDir ? "> " + items[item].title : items[item].title;
         },
         [this, prevOff](int i) -> std::string {
