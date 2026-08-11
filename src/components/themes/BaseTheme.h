@@ -23,6 +23,15 @@ struct TabInfo {
   bool selected;
 };
 
+// Geometry of the standard header + list + button-hints screen, so list
+// activities share one layout instead of each recomputing it from metrics.
+struct ListLayout {
+  Rect header;
+  Rect list;
+  int rowStep;
+  int pageItems;
+};
+
 struct ThemeMetrics {
   int batteryWidth;
   int batteryHeight;
@@ -193,6 +202,7 @@ class BaseTheme {
   virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const;
   virtual int getListRowStep(bool hasSubtitle) const;
   virtual int getListPageItems(int contentHeight, bool hasSubtitle) const;
+  ListLayout getListLayout(const GfxRenderer& renderer, bool hasSubtitle) const;
   virtual void drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
                         const std::function<std::string(int index)>& rowTitle,
                         const std::function<std::string(int index)>& rowSubtitle = nullptr,

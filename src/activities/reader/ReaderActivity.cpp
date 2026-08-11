@@ -74,7 +74,7 @@ std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path) {
   if (!epub->getProtectionError().empty()) {
     LOG_ERR("READER", "protected book unavailable: %s", epub->getProtectionError().c_str());
     renderer.clearScreen();
-    GUI.drawPopup(renderer, "DRM-protected file");
+    GUI.drawPopup(renderer, tr(STR_DRM_PROTECTED_FILE));
     delay(2500);
     return nullptr;
   }

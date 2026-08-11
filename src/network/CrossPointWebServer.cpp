@@ -11,6 +11,7 @@
 #include <Util.h>
 #include <WiFi.h>
 #include <WolfsslCrypto.h>
+#include <base64.h>
 #include <esp_efuse.h>
 #include <esp_efuse_table.h>
 
@@ -1709,27 +1710,6 @@ bool safeComponent(const String& s) {
   return !s.isEmpty() && s.indexOf('/') < 0 && s.indexOf('\\') < 0 && s.indexOf("..") < 0;
 }
 
-// Read a small SD file fully into a std::string. Empty on failure/oversize.
-std::string readSmallSdFile(const std::string& path, size_t cap = 64 * 1024) {
-  HalFile f = Storage.open(path.c_str(), O_RDONLY);
-  if (!f || !f.isOpen() || f.isDirectory()) {
-    if (f) f.close();
-    return {};
-  }
-  const size_t sz = static_cast<size_t>(f.fileSize64());
-  if (sz == 0 || sz > cap) {
-    f.close();
-    return {};
-  }
-  std::string out;
-  out.resize(sz);
-  const int n = f.read(&out[0], sz);
-  f.close();
-  if (n <= 0) return {};
-  out.resize(static_cast<size_t>(n));
-  return out;
-}
-
 const char* pluginContentType(const String& file) {
   if (file.endsWith(".js")) return "application/javascript";
   if (file.endsWith(".css")) return "text/css";
@@ -1741,45 +1721,27 @@ const char* pluginContentType(const String& file) {
 
 }  // namespace
 
-// GET /api/plugins -> [{ "name", "title", "mount" }, ...]. A plugin is a subdir
-// of /.crosspoint/plugins containing plugin.js; optional manifest.json supplies
-// its title and mount point.
+// GET /api/plugins -> [{ "name", "title", "mount" }, ...]. Only plugins with a
+// plugin.js are listed (the page loads it); optional manifest.json supplies the
+// title and mount point.
 void CrossPointWebServer::handlePluginList() const {
   JsonDocument doc;
   JsonArray arr = doc.to<JsonArray>();
 
-  std::vector<std::string> seen;  // earlier roots win on name collisions
-  seen.reserve(8);
-  for (size_t r = 0; r < PluginLocations::kRootCount; r++) {
-    HalFile dir = Storage.open(PluginLocations::kRoots[r]);
-    if (!dir || !dir.isDirectory()) continue;
-    dir.rewindDirectory();
-    for (HalFile entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
-      char nameBuf[128] = {0};
-      entry.getName(nameBuf, sizeof(nameBuf));
-      const bool isDir = entry.isDirectory();
-      entry.close();
-      if (!isDir || nameBuf[0] == '.') continue;
-      if (std::find(seen.begin(), seen.end(), nameBuf) != seen.end()) continue;
-
-      const std::string base = std::string(PluginLocations::kRoots[r]) + "/" + nameBuf;
-      if (!Storage.exists((base + "/plugin.js").c_str())) continue;
-      seen.emplace_back(nameBuf);
-
-      JsonObject obj = arr.add<JsonObject>();
-      obj["name"] = nameBuf;
-      obj["title"] = nameBuf;     // overridden by manifest below
-      obj["mount"] = "settings";  // default mount point
-      const std::string manifest = readSmallSdFile(base + "/manifest.json");
-      if (!manifest.empty()) {
-        JsonDocument m;
-        if (deserializeJson(m, manifest) == DeserializationError::Ok) {
-          if (m["title"].is<const char*>()) obj["title"] = m["title"];
-          if (m["mount"].is<const char*>()) obj["mount"] = m["mount"];
-        }
+  for (const auto& e : PluginLocations::scanPlugins()) {
+    if (!e.hasPluginJs) continue;
+    JsonObject obj = arr.add<JsonObject>();
+    obj["name"] = e.name;
+    obj["title"] = e.name;      // overridden by manifest below
+    obj["mount"] = "settings";  // default mount point
+    std::string manifest;
+    if (e.hasManifest && Storage.readFileToString("WEB", e.dir + "/manifest.json", 64 * 1024, manifest)) {
+      JsonDocument m;
+      if (deserializeJson(m, manifest) == DeserializationError::Ok) {
+        if (m["title"].is<const char*>()) obj["title"] = m["title"];
+        if (m["mount"].is<const char*>()) obj["mount"] = m["mount"];
       }
     }
-    dir.close();
   }
 
   String out;
@@ -1962,32 +1924,9 @@ void CrossPointWebServer::handleRelay() {
 }
 
 namespace {
-std::string b64encode(const uint8_t* data, size_t len) {
-  static const char* T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  std::string out;
-  out.reserve(((len + 2) / 3) * 4);
-  size_t i = 0;
-  for (; i + 3 <= len; i += 3) {
-    const uint32_t n = (uint32_t(data[i]) << 16) | (uint32_t(data[i + 1]) << 8) | data[i + 2];
-    out += T[(n >> 18) & 63];
-    out += T[(n >> 12) & 63];
-    out += T[(n >> 6) & 63];
-    out += T[n & 63];
-  }
-  if (len - i == 1) {
-    const uint32_t n = uint32_t(data[i]) << 16;
-    out += T[(n >> 18) & 63];
-    out += T[(n >> 12) & 63];
-    out += "==";
-  } else if (len - i == 2) {
-    const uint32_t n = (uint32_t(data[i]) << 16) | (uint32_t(data[i + 1]) << 8);
-    out += T[(n >> 18) & 63];
-    out += T[(n >> 12) & 63];
-    out += T[(n >> 6) & 63];
-    out += "=";
-  }
-  return out;
-}
+// Thin std::string adapters over the Arduino base64 encoder HttpDownloader
+// already links; crypto payloads are small, so the transient String is fine.
+std::string b64encode(const uint8_t* data, size_t len) { return base64::encode(data, len).c_str(); }
 std::string b64encode(const std::string& s) { return b64encode(reinterpret_cast<const uint8_t*>(s.data()), s.size()); }
 std::string b64encode(const std::vector<uint8_t>& v) { return b64encode(v.data(), v.size()); }
 
@@ -2409,36 +2348,15 @@ void CrossPointWebServer::handleFetch() {
   sendFetchResult(200, out);
 }
 
-// POST /api/plugin-fs?plugin=<name>&path=<path> with a raw request body.
-// The former JSON/base64 request shape remains available for compatibility.
-// A plugin writes a small file to SD.
+// POST /api/plugin-fs?plugin=<name>&path=<path> with the raw file contents as
+// the request body. A plugin writes a small file to SD.
 void CrossPointWebServer::handlePluginFs() {
   if (!server->hasArg("plain")) {
     server->send(400, "application/json", "{\"error\":\"missing body\"}");
     return;
   }
-  String plugin;
-  std::string path;
-  std::string legacyData;
-  String rawData;
-  const bool rawRequest = server->hasArg("plugin") && server->hasArg("path");
-  if (rawRequest) {
-    plugin = server->arg("plugin");
-    path = server->arg("path").c_str();
-    rawData = server->arg("plain");
-  } else {
-    JsonDocument req;
-    const DeserializationError jsonError = deserializeJson(req, server->arg("plain"));
-    if (jsonError != DeserializationError::Ok) {
-      LOG_ERR("WEB", "Plugin file write JSON error: %s", jsonError.c_str());
-      server->send(400, "application/json", "{\"error\":\"bad json\"}");
-      return;
-    }
-    plugin = req["plugin"] | "";
-    path = req["path"] | "";
-    const char* encoded = req["data"].as<const char*>();
-    legacyData = encoded ? freeink::content::base64Decode(std::string(encoded)) : std::string();
-  }
+  const String plugin = server->arg("plugin");
+  const std::string path = server->arg("path").c_str();
   if (!safeComponent(plugin) || !safeWritePath(path)) {
     LOG_ERR("WEB", "Rejected plugin file write: plugin='%s' path='%s'", plugin.c_str(), path.c_str());
     server->send(400, "application/json", "{\"error\":\"bad path\"}");
@@ -2451,9 +2369,9 @@ void CrossPointWebServer::handlePluginFs() {
     server->send(500, "application/json", "{\"error\":\"cannot write\"}");
     return;
   }
-  const uint8_t* data = rawRequest ? reinterpret_cast<const uint8_t*>(rawData.c_str())
-                                   : reinterpret_cast<const uint8_t*>(legacyData.data());
-  const size_t dataSize = rawRequest ? rawData.length() : legacyData.size();
+  const String& rawData = server->arg("plain");
+  const auto* data = reinterpret_cast<const uint8_t*>(rawData.c_str());
+  const size_t dataSize = rawData.length();
   const size_t n = dataSize == 0 ? 0 : f.write(data, dataSize);
   f.flush();
   f.close();

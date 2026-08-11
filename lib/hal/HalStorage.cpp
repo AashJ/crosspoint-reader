@@ -53,6 +53,19 @@ size_t HalStorage::readFileToBuffer(const char* path, char* buffer, size_t buffe
   HAL_STORAGE_WRAPPED_CALL(readFileToBuffer, path, buffer, bufferSize, maxBytes);
 }
 
+// Composed of already-locked HalStorage/HalFile operations; needs no
+// StorageLock of its own.
+bool HalStorage::readFileToString(const char* moduleName, const std::string& path, size_t cap, std::string& out) {
+  out.clear();
+  HalFile file;
+  if (!openFileForRead(moduleName, path, file)) return false;
+  if (file.isDirectory()) return false;
+  const size_t size = file.fileSize();
+  if (size == 0 || size > cap) return false;
+  out.resize(size);
+  return file.read(out.data(), size) == static_cast<int>(size);
+}
+
 bool HalStorage::writeFile(const char* path, const String& content) {
   HAL_STORAGE_WRAPPED_CALL(writeFile, path, content);
 }

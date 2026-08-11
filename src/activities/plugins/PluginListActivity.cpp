@@ -8,30 +8,6 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 
-namespace {
-// Geometry from the active theme, so the list matches every other screen.
-struct ListLayout {
-  Rect header;
-  Rect list;
-  int rowStep;
-  int pageItems;
-};
-ListLayout layoutFor(const GfxRenderer& renderer) {
-  const auto& m = UITheme::getInstance().getMetrics();
-  const int w = renderer.getScreenWidth();
-  const int listTop = m.topPadding + m.headerHeight + m.verticalSpacing;
-  const int listHeight =
-      renderer.getScreenHeight() - (m.topPadding + m.headerHeight + m.buttonHintsHeight + m.verticalSpacing * 2);
-  ListLayout l;
-  l.header = Rect{0, m.topPadding, w, m.headerHeight};
-  l.list = Rect{0, listTop, w, listHeight};
-  l.rowStep = GUI.getListRowStep(/*hasSubtitle=*/true);
-  l.pageItems = GUI.getListPageItems(listHeight, /*hasSubtitle=*/true);
-  if (l.pageItems < 1) l.pageItems = 1;
-  return l;
-}
-}  // namespace
-
 void PluginListActivity::onEnter() {
   Activity::onEnter();
   plugins = discoverPlugins();
@@ -77,7 +53,7 @@ void PluginListActivity::loop() {
   }
 
   if (itemCount() > 0) {
-    const ListLayout l = layoutFor(renderer);
+    const ListLayout l = GUI.getListLayout(renderer, /*hasSubtitle=*/true);
     int row = -1;
     const auto touch = mappedInput.rowTouch(row, l.list.y, l.rowStep, l.pageItems);
     if (touch != MappedInputManager::RowTouch::None) {
@@ -123,7 +99,7 @@ void PluginListActivity::render(RenderLock&&) {
   if (itemCount() == 0) {
     renderer.drawCenteredText(UI_10_FONT_ID, renderer.getScreenHeight() / 2, tr(STR_NO_PLUGINS_INSTALLED));
   } else {
-    const ListLayout l = layoutFor(renderer);
+    const ListLayout l = GUI.getListLayout(renderer, /*hasSubtitle=*/true);
     GUI.drawList(
         renderer, l.list, itemCount(), selectorIndex,
         [this](int i) { return isOpdsRow(i) ? std::string(tr(STR_OPDS_BROWSER)) : plugins[pluginIndex(i)].title; },

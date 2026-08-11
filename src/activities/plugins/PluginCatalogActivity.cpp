@@ -9,9 +9,11 @@
 #include <MD5Builder.h>
 #include <SecureHttpClient.h>
 #include <WiFi.h>
+#include <XmlParserUtils.h>
 #include <strings.h>
 
 #include <algorithm>
+#include <cstring>
 
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
@@ -32,16 +34,6 @@ constexpr size_t MAX_API_RESPONSE = 48 * 1024;
 constexpr int MAX_PAGE_SIZE = 16;
 constexpr int DOWNLOAD_PROGRESS_STEP_PERCENT = 5;
 constexpr unsigned long DOWNLOAD_PROGRESS_MIN_UPDATE_MS = 5000;
-
-// Reads a small SD file fully. Files above `cap` fail rather than allocate.
-bool readSmallFile(const std::string& path, size_t cap, std::string& out) {
-  HalFile file;
-  if (!Storage.openFileForRead("PCAT", path, file)) return false;
-  const size_t size = file.fileSize();
-  if (size == 0 || size > cap) return false;
-  out.resize(size);
-  return file.read(out.data(), size) == static_cast<int>(size);
-}
 
 void splitPath(const std::string& dotted, std::vector<std::string>& out) {
   out.clear();
@@ -184,43 +176,7 @@ void readHeaders(JsonVariantConst node, std::vector<std::pair<std::string, std::
   }
 }
 
-// Themed list geometry, so the catalog matches every other list screen.
-struct CatLayout {
-  Rect header;
-  Rect list;
-  int rowStep;
-  int pageItems;
-};
-CatLayout catLayout(const GfxRenderer& renderer) {
-  const auto& m = UITheme::getInstance().getMetrics();
-  const int w = renderer.getScreenWidth();
-  const int listTop = m.topPadding + m.headerHeight + m.verticalSpacing;
-  const int listHeight =
-      renderer.getScreenHeight() - (m.topPadding + m.headerHeight + m.buttonHintsHeight + m.verticalSpacing * 2);
-  CatLayout l;
-  l.header = Rect{0, m.topPadding, w, m.headerHeight};
-  l.list = Rect{0, listTop, w, listHeight};
-  l.rowStep = GUI.getListRowStep(/*hasSubtitle=*/true);
-  l.pageItems = GUI.getListPageItems(listHeight, /*hasSubtitle=*/true);
-  if (l.pageItems < 1) l.pageItems = 1;
-  return l;
-}
-
 // --- XML-list helpers -----------------------------------------------------
-// XML bodies prefix elements with a namespace ("d:", "D:", "atom:", ...), so
-// match on the local name only.
-std::string xmlLocalName(const std::string& tag) {
-  size_t start = 0;
-  if (!tag.empty() && tag[0] == '/') start = 1;
-  size_t end = start;
-  while (end < tag.size() && tag[end] != ' ' && tag[end] != '\t' && tag[end] != '\r' && tag[end] != '\n' &&
-         tag[end] != '/' && tag[end] != '>')
-    end++;
-  std::string name = tag.substr(start, end - start);
-  const size_t colon = name.rfind(':');
-  return colon == std::string::npos ? name : name.substr(colon + 1);
-}
-
 std::string urlDecode(const std::string& s) {
   std::string out;
   out.reserve(s.size());
@@ -288,72 +244,155 @@ bool hasAllowedExtension(const std::string& path, const std::vector<std::string>
   return false;
 }
 
-// Reads attribute `attr` from a raw tag body (the text between < and >).
-// Accepts both quote styles; requires a word boundary before the name.
-std::string xmlAttr(const std::string& tag, const std::string& attr) {
-  size_t pos = 0;
-  while ((pos = tag.find(attr, pos)) != std::string::npos) {
-    const bool boundary = pos == 0 || tag[pos - 1] == ' ' || tag[pos - 1] == '\t';
-    const size_t after = pos + attr.size();
-    if (boundary && after < tag.size() && tag[after] == '=') {
-      const char quote = after + 1 < tag.size() ? tag[after + 1] : '\0';
-      if (quote == '"' || quote == '\'') {
-        const size_t start = after + 2;
-        const size_t end = tag.find(quote, start);
-        if (end != std::string::npos) return tag.substr(start, end - start);
+// Extracts one row per repeating item element from an XML list via expat (the
+// parser the OPDS browser already uses), instead of scanning tags by hand.
+// Elements match on local name (namespace prefix stripped). Selector forms:
+// "elem" (leading text of the first matching descendant), "elem@attr"
+// (attribute of the first matching descendant), "@attr" (attribute on the
+// item element itself).
+class XmlListParser {
+ public:
+  enum Field { F_URL, F_TITLE, F_AUTHOR, F_ID, F_COUNT };
+  struct RawItem {
+    std::string field[F_COUNT];
+    bool isDir = false;
+  };
+
+  XmlListParser(const std::string& itemName, const std::string& containerName, const std::string (&selectors)[F_COUNT])
+      : item(itemName), container(containerName) {
+    for (int i = 0; i < F_COUNT; i++) splitSelector(selectors[i], sel[i]);
+  }
+
+  // Parses the whole document. Rows collected before a parse error are kept,
+  // mirroring the previous scanner, which stopped at the first bad tag.
+  std::vector<RawItem> parse(const std::string& xml) {
+    XML_Parser p = XML_ParserCreate(nullptr);
+    if (!p) return std::move(rows);
+    XML_SetUserData(p, this);
+    XML_SetElementHandler(
+        p,
+        [](void* self, const XML_Char* name, const XML_Char** atts) {
+          static_cast<XmlListParser*>(self)->onStart(name, atts);
+        },
+        [](void* self, const XML_Char* name) { static_cast<XmlListParser*>(self)->onEnd(name); });
+    XML_SetCharacterDataHandler(
+        p, [](void* self, const XML_Char* s, int len) { static_cast<XmlListParser*>(self)->onText(s, len); });
+    if (XML_Parse(p, xml.data(), static_cast<int>(xml.size()), XML_TRUE) != XML_STATUS_OK) {
+      LOG_ERR("PCAT", "XML parse error at line %lu: %s", XML_GetCurrentLineNumber(p),
+              XML_ErrorString(XML_GetErrorCode(p)));
+    }
+    destroyXmlParser(p);
+    return std::move(rows);
+  }
+
+ private:
+  static constexpr size_t MAX_ITEMS = 200;
+  static constexpr size_t MAX_FIELD_CHARS = 768;
+
+  struct Selector {
+    std::string elem, attr;
+    bool onItemTag = false;  // "@attr": read from the item element's own tag
+    bool isSet() const { return !elem.empty() || !attr.empty(); }
+  };
+
+  static void splitSelector(const std::string& s, Selector& out) {
+    if (s.empty()) return;
+    if (s[0] == '@') {
+      out.onItemTag = true;
+      out.attr = s.substr(1);
+      return;
+    }
+    const size_t at = s.find('@');
+    out.elem = at == std::string::npos ? s : s.substr(0, at);
+    if (at != std::string::npos) out.attr = s.substr(at + 1);
+  }
+
+  static const char* localName(const XML_Char* name) {
+    const char* colon = strrchr(name, ':');
+    return colon ? colon + 1 : name;
+  }
+
+  static const char* findAttr(const XML_Char** atts, const std::string& attr) {
+    for (int i = 0; atts[i]; i += 2) {
+      if (attr == atts[i]) return atts[i + 1];
+    }
+    return nullptr;
+  }
+
+  void onStart(const XML_Char* name, const XML_Char** atts) {
+    depth++;
+    const char* local = localName(name);
+    if (itemDepth < 0) {
+      if (rows.size() < MAX_ITEMS && item == local) {
+        itemDepth = depth;
+        current = RawItem{};
+        capturingMask = 0;
+        for (int i = 0; i < F_COUNT; i++) {
+          done[i] = !sel[i].isSet();
+          if (sel[i].onItemTag) {
+            const char* v = findAttr(atts, sel[i].attr);
+            if (v) current.field[i] = v;
+            done[i] = true;
+          }
+        }
+      }
+      return;
+    }
+    // Inside an item: a child element ends any leading-text capture.
+    capturingMask = 0;
+    if (!container.empty() && container == local) current.isDir = true;
+    for (int i = 0; i < F_COUNT; i++) {
+      if (done[i] || sel[i].onItemTag || sel[i].elem != local) continue;
+      done[i] = true;  // first matching descendant wins
+      if (!sel[i].attr.empty()) {
+        const char* v = findAttr(atts, sel[i].attr);
+        if (v) current.field[i] = v;
+      } else {
+        capturingMask |= 1u << i;
       }
     }
-    pos = after;
   }
-  return "";
-}
 
-// Evaluates an XML field selector against one item element's inner XML and its
-// own opening tag. Selectors: "elem" (child element text), "elem@attr" (child
-// element attribute), "@attr" (attribute on the item element itself).
-std::string xmlSelect(const std::string& block, const std::string& itemTag, const std::string& selector) {
-  if (selector.empty()) return "";
-  if (selector[0] == '@') return xmlAttr(itemTag, selector.substr(1));
-  const size_t at = selector.find('@');
-  const std::string elem = at == std::string::npos ? selector : selector.substr(0, at);
-  const std::string attr = at == std::string::npos ? "" : selector.substr(at + 1);
-  size_t pos = 0;
-  while (pos < block.size()) {
-    const size_t lt = block.find('<', pos);
-    if (lt == std::string::npos) break;
-    const size_t gt = block.find('>', lt);
-    if (gt == std::string::npos) break;
-    const std::string tag = block.substr(lt + 1, gt - lt - 1);
-    if (!tag.empty() && tag[0] != '/' && xmlLocalName(tag) == elem) {
-      if (attr.empty()) {
-        const size_t te = block.find('<', gt + 1);
-        std::string text = te == std::string::npos ? block.substr(gt + 1) : block.substr(gt + 1, te - gt - 1);
-        // trim surrounding whitespace
-        const size_t b = text.find_first_not_of(" \t\r\n");
-        const size_t e = text.find_last_not_of(" \t\r\n");
-        return b == std::string::npos ? "" : text.substr(b, e - b + 1);
+  void onEnd(const XML_Char* name) {
+    if (itemDepth >= 0) {
+      capturingMask = 0;
+      if (depth == itemDepth && item == localName(name)) {
+        for (auto& f : current.field) trim(f);
+        rows.push_back(std::move(current));
+        itemDepth = -1;
       }
-      return xmlAttr(tag, attr);
     }
-    pos = gt + 1;
+    depth--;
   }
-  return "";
-}
 
-// True when the item element's inner XML contains an element with local-name.
-bool xmlHasElement(const std::string& block, const std::string& localName) {
-  size_t pos = 0;
-  while (pos < block.size()) {
-    const size_t lt = block.find('<', pos);
-    if (lt == std::string::npos) break;
-    const size_t gt = block.find('>', lt);
-    if (gt == std::string::npos) break;
-    const std::string tag = block.substr(lt + 1, gt - lt - 1);
-    if (!tag.empty() && tag[0] != '/' && xmlLocalName(tag) == localName) return true;
-    pos = gt + 1;
+  void onText(const XML_Char* s, const int len) {
+    if (itemDepth < 0 || capturingMask == 0) return;
+    for (int i = 0; i < F_COUNT; i++) {
+      if (!(capturingMask & (1u << i)) || current.field[i].size() >= MAX_FIELD_CHARS) continue;
+      current.field[i].append(s, std::min<size_t>(len, MAX_FIELD_CHARS - current.field[i].size()));
+    }
   }
-  return false;
-}
+
+  static void trim(std::string& s) {
+    const size_t b = s.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) {
+      s.clear();
+      return;
+    }
+    const size_t e = s.find_last_not_of(" \t\r\n");
+    s = s.substr(b, e - b + 1);
+  }
+
+  std::string item;
+  std::string container;
+  Selector sel[F_COUNT];
+  std::vector<RawItem> rows;
+  RawItem current;
+  bool done[F_COUNT] = {};
+  uint8_t capturingMask = 0;
+  int depth = 0;
+  int itemDepth = -1;
+};
 }  // namespace
 
 namespace {
@@ -361,7 +400,7 @@ namespace {
 // overwriting non-empty values (so device.json wins over manifest.json).
 void readTitleDesc(const std::string& path, PluginRef& ref) {
   std::string raw;
-  if (!readSmallFile(path, MAX_MANIFEST_SIZE, raw)) return;
+  if (!Storage.readFileToString("PCAT", path, MAX_MANIFEST_SIZE, raw)) return;
   JsonDocument filter;
   filter["title"] = true;
   filter["description"] = true;
@@ -373,61 +412,39 @@ void readTitleDesc(const std::string& path, PluginRef& ref) {
 }  // namespace
 
 std::vector<PluginRef> discoverPlugins() {
+  const auto entries = PluginLocations::scanPlugins();
   std::vector<PluginRef> plugins;
-  std::vector<std::string> seen;  // earlier roots win on name collisions
-  for (size_t r = 0; r < PluginLocations::kRootCount; r++) {
-    HalFile root = Storage.open(PluginLocations::kRoots[r]);
-    if (!root || !root.isDirectory()) continue;
-    for (HalFile entry = root.openNextFile(); entry; entry = root.openNextFile()) {
-      if (!entry.isDirectory()) continue;
-      char name[64];
-      if (entry.getName(name, sizeof(name)) == 0 || name[0] == '.') continue;
-      if (std::find(seen.begin(), seen.end(), name) != seen.end()) continue;
+  plugins.reserve(entries.size());
+  for (const auto& e : entries) {
+    const std::string devicePath = e.dir + "/device.json";
+    const std::string readmePath = e.dir + "/README.md";
 
-      const std::string dir = std::string(PluginLocations::kRoots[r]) + "/" + name;
-      const std::string devicePath = dir + "/device.json";
-      const std::string manifestPath = dir + "/manifest.json";
-      const std::string readmePath = dir + "/README.md";
-      const bool hasDevice = Storage.exists(devicePath.c_str());
-      const bool hasManifest = Storage.exists(manifestPath.c_str());
-      const bool hasPluginJs = Storage.exists((dir + "/plugin.js").c_str());
-      // A folder is a plugin if it carries any of the three known files.
-      if (!hasDevice && !hasManifest && !hasPluginJs) continue;
-      seen.emplace_back(name);
-
-      PluginRef ref;
-      ref.name = name;
-      ref.title = name;
-      ref.hasCatalog = hasDevice;
-      if (hasDevice) ref.manifestPath = devicePath;
-      if (Storage.exists(readmePath.c_str())) ref.readmePath = readmePath;
-      // manifest.json first, then device.json overrides (on-device authority).
-      if (hasManifest) readTitleDesc(manifestPath, ref);
-      if (hasDevice) readTitleDesc(devicePath, ref);
-      plugins.push_back(std::move(ref));
-    }
+    PluginRef ref;
+    ref.name = e.name;
+    ref.title = e.name;
+    ref.hasCatalog = e.hasDevice;
+    if (e.hasDevice) ref.manifestPath = devicePath;
+    if (Storage.exists(readmePath.c_str())) ref.readmePath = readmePath;
+    // manifest.json first, then device.json overrides (on-device authority).
+    if (e.hasManifest) readTitleDesc(e.dir + "/manifest.json", ref);
+    if (e.hasDevice) readTitleDesc(devicePath, ref);
+    plugins.push_back(std::move(ref));
   }
   return plugins;
 }
 
 bool anyPluginInstalled() {
-  for (size_t r = 0; r < PluginLocations::kRootCount; r++) {
-    HalFile root = Storage.open(PluginLocations::kRoots[r]);
-    if (!root || !root.isDirectory()) continue;
-    for (HalFile entry = root.openNextFile(); entry; entry = root.openNextFile()) {
-      if (!entry.isDirectory()) continue;
-      char name[64];
-      if (entry.getName(name, sizeof(name)) == 0 || name[0] == '.') continue;
-      const std::string dir = std::string(PluginLocations::kRoots[r]) + "/" + name;
-      if (Storage.exists((dir + "/plugin.js").c_str()) || Storage.exists((dir + "/device.json").c_str())) return true;
-    }
+  // manifest.json alone means web-card metadata only: listed for its README,
+  // but not enough to claim the home screen's library slot.
+  for (const auto& e : PluginLocations::scanPlugins()) {
+    if (e.hasPluginJs || e.hasDevice) return true;
   }
   return false;
 }
 
 bool PluginCatalogActivity::loadManifest() {
   std::string raw;
-  if (!readSmallFile(manifestPath, MAX_MANIFEST_SIZE, raw)) return false;
+  if (!Storage.readFileToString("PCAT", manifestPath, MAX_MANIFEST_SIZE, raw)) return false;
   JsonDocument doc;
   if (deserializeJson(doc, raw) != DeserializationError::Ok) return false;
 
@@ -520,7 +537,7 @@ bool PluginCatalogActivity::loadToken() {
   token.clear();
   if (manifest.tokenFile.empty()) return true;  // token-less catalog
   std::string raw;
-  if (!readSmallFile(manifest.tokenFile, MAX_TOKEN_FILE_SIZE, raw)) return false;
+  if (!Storage.readFileToString("PCAT", manifest.tokenFile, MAX_TOKEN_FILE_SIZE, raw)) return false;
   JsonDocument doc;
   if (deserializeJson(doc, raw) != DeserializationError::Ok) return false;
   token = variantToString(resolvePath(doc.as<JsonVariantConst>(), manifest.tokenPath));
@@ -531,7 +548,7 @@ void PluginCatalogActivity::loadConfig() {
   config.clear();
   if (manifest.configFile.empty()) return;
   std::string raw;
-  if (!readSmallFile(manifest.configFile, MAX_TOKEN_FILE_SIZE, raw)) return;
+  if (!Storage.readFileToString("PCAT", manifest.configFile, MAX_TOKEN_FILE_SIZE, raw)) return;
   JsonDocument doc;
   if (deserializeJson(doc, raw) != DeserializationError::Ok) return;
   for (JsonPairConst kv : doc.as<JsonObjectConst>()) {
@@ -740,58 +757,26 @@ void PluginCatalogActivity::fetchXmlList() {
   };
   const std::string decodedSelf = trimSlash(urlDecode(selfPath));
 
-  // Walk each repeating <item> element and evaluate the field selectors.
+  // Extract one row per repeating item element, then apply the list rules.
+  const std::string selectors[XmlListParser::F_COUNT] = {manifest.urlPath, manifest.titlePath, manifest.authorPath,
+                                                         manifest.idPath};
+  XmlListParser parser(manifest.xmlItem, manifest.xmlContainer, selectors);
+  const auto rows = parser.parse(response);
+  response.clear();
+  response.shrink_to_fit();
+
   items.clear();
-  size_t pos = 0;
-  const std::string openPrefix = "<";
-  while (items.size() < 200) {
-    // Find the next opening tag whose local-name is the item element.
-    size_t itemLt = std::string::npos;
-    size_t scan = pos;
-    std::string itemTag;
-    while (scan < response.size()) {
-      const size_t lt = response.find('<', scan);
-      if (lt == std::string::npos) break;
-      const size_t gt = response.find('>', lt);
-      if (gt == std::string::npos) break;
-      const std::string tag = response.substr(lt + 1, gt - lt - 1);
-      if (!tag.empty() && tag[0] != '/' && tag.back() != '/' && xmlLocalName(tag) == manifest.xmlItem) {
-        itemLt = gt + 1;  // content starts after this tag
-        itemTag = tag;
-        break;
-      }
-      scan = gt + 1;
-    }
-    if (itemLt == std::string::npos) break;
-
-    // Find its matching close tag (item elements do not nest in practice).
-    size_t blockEnd = std::string::npos;
-    size_t cscan = itemLt;
-    while (cscan < response.size()) {
-      const size_t lt = response.find('<', cscan);
-      if (lt == std::string::npos) break;
-      const size_t gt = response.find('>', lt);
-      if (gt == std::string::npos) break;
-      const std::string tag = response.substr(lt + 1, gt - lt - 1);
-      if (!tag.empty() && tag[0] == '/' && xmlLocalName(tag) == manifest.xmlItem) {
-        blockEnd = lt;
-        pos = gt + 1;
-        break;
-      }
-      cscan = gt + 1;
-    }
-    if (blockEnd == std::string::npos) break;
-    const std::string block = response.substr(itemLt, blockEnd - itemLt);
-
-    const std::string rawUrl = xmlSelect(block, itemTag, manifest.urlPath);
+  items.reserve(rows.size());
+  for (const auto& row : rows) {
+    const std::string& rawUrl = row.field[XmlListParser::F_URL];
     if (rawUrl.empty()) continue;
     Item item;
-    item.isDir = !manifest.xmlContainer.empty() && xmlHasElement(block, manifest.xmlContainer);
+    item.isDir = row.isDir;
     item.url =
         manifest.xmlResolveUrls && rawUrl.rfind("http", 0) != 0 ? origin + urlEncodePath(urlDecode(rawUrl)) : rawUrl;
-    item.author = xmlSelect(block, itemTag, manifest.authorPath);
-    item.id = xmlSelect(block, itemTag, manifest.idPath);
-    std::string title = xmlSelect(block, itemTag, manifest.titlePath);
+    item.author = row.field[XmlListParser::F_AUTHOR];
+    item.id = row.field[XmlListParser::F_ID];
+    const std::string& title = row.field[XmlListParser::F_TITLE];
     item.title = title.empty() ? basename(urlDecode(rawUrl)) : title;
 
     if (manifest.xmlSkipSelf && trimSlash(urlDecode(rawUrl)) == decodedSelf) continue;
@@ -1193,7 +1178,7 @@ void PluginCatalogActivity::loop() {
   }
 
   // BROWSING
-  const CatLayout layout = catLayout(renderer);
+  const ListLayout layout = GUI.getListLayout(renderer, /*hasSubtitle=*/true);
   const int rows = layout.pageItems;
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (!items.empty()) activateSelected();
@@ -1356,7 +1341,7 @@ void PluginCatalogActivity::render(RenderLock&&) {
   }
 
   // BROWSING
-  const CatLayout layout = catLayout(renderer);
+  const ListLayout layout = GUI.getListLayout(renderer, /*hasSubtitle=*/true);
   const bool onDir = manifest.isXmlList() && !items.empty() && items[selectorIndex].isDir;
   const char* confirmLabel = onDir ? tr(STR_OPEN) : tr(STR_DOWNLOAD);
   // XML lists page by folder navigation (Confirm/Back), not the API pager.
