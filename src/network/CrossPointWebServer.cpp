@@ -1856,8 +1856,9 @@ void CrossPointWebServer::handleRelay() {
     resetTaskWatchdogIfSubscribed();
     return false;  // never aborts; only feeds
   };
-  // The response passes through RAM three times below (accumulate, JsonDocument
-  // copy, serialized String), so it is hard-capped. Large payloads must go
+  // The response body is accumulated once here, then streamed out escaped (see
+  // below) instead of being copied into a JsonDocument and re-serialized into a
+  // String. That single copy is still hard-capped: large payloads must go
   // through /api/fetch, which streams to SD without buffering. An uncapped
   // relay of a ~190KB response was measured aborting the firmware: std::string
   // growth OOMs, and with -fno-exceptions bad_alloc goes straight to abort().
@@ -1870,12 +1871,17 @@ void CrossPointWebServer::handleRelay() {
       [&](const uint8_t* data, size_t len) {
         if (!sized) {
           sized = true;
-          // Known-oversized: refuse before buffering a single chunk.
-          if (http.hasContentLength() && http.getContentLength() > RELAY_BODY_LIMIT) {
-            tooLarge = true;
-            return false;
+          if (http.hasContentLength()) {
+            const size_t contentLength = http.getContentLength();
+            // Known-oversized: refuse before buffering a single chunk. Also bail
+            // if the reserve would not fit the largest free block, since the
+            // std::string growth that follows would abort() under -fno-exceptions.
+            if (contentLength > RELAY_BODY_LIMIT || contentLength + 4096 > ESP.getMaxAllocHeap()) {
+              tooLarge = true;
+              return false;
+            }
+            respBody.reserve(contentLength);
           }
-          if (http.hasContentLength()) respBody.reserve(http.getContentLength());
         }
         if (respBody.size() + len > RELAY_BODY_LIMIT) {
           tooLarge = true;
@@ -1906,21 +1912,61 @@ void CrossPointWebServer::handleRelay() {
     return;
   }
 
-  JsonDocument resp;
-  resp["status"] = status;
-  resp["body"] = respBody;
-  // Response headers, order- and duplicate-preserving (so every Set-Cookie is
-  // visible), as [name, value] pairs. Generic: the relay is just an
-  // authenticated HTTP proxy; it attaches no meaning to any header.
-  JsonArray headers = resp["headers"].to<JsonArray>();
+  // Serialize only the small header set up front; the body is streamed below so
+  // it is never copied into a JsonDocument or a second String. Response headers
+  // are order- and duplicate-preserving (so every Set-Cookie is visible), as
+  // [name, value] pairs. Generic: the relay is just an authenticated HTTP proxy;
+  // it attaches no meaning to any header.
+  JsonDocument headersDoc;
+  JsonArray headers = headersDoc.to<JsonArray>();
   for (const auto& h : http.getHeaders()) {
     JsonArray pair = headers.add<JsonArray>();
     pair.add(h.first);
     pair.add(h.second);
   }
-  String out;
-  serializeJson(resp, out);
-  server->send(200, "application/json", out);
+  String headersJson;
+  serializeJson(headers, headersJson);
+
+  // Stream {"status":N,"headers":[...],"body":"<escaped>"} in chunks so peak RAM
+  // is one copy of the body, not three. The body is JSON-string escaped on the
+  // fly into a small reused buffer flushed every ~512 bytes.
+  server->setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server->send(200, "application/json", "");
+  char prefix[64];
+  snprintf(prefix, sizeof(prefix), "{\"status\":%d,\"headers\":", status);
+  server->sendContent(prefix);
+  server->sendContent(headersJson);
+  server->sendContent(",\"body\":\"");
+  std::string chunk;
+  chunk.reserve(576);
+  for (const char c : respBody) {
+    switch (c) {
+      case '"': chunk += "\\\""; break;
+      case '\\': chunk += "\\\\"; break;
+      case '\b': chunk += "\\b"; break;
+      case '\f': chunk += "\\f"; break;
+      case '\n': chunk += "\\n"; break;
+      case '\r': chunk += "\\r"; break;
+      case '\t': chunk += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(c) < 0x20) {
+          char esc[8];
+          snprintf(esc, sizeof(esc), "\\u%04x", static_cast<unsigned char>(c));
+          chunk += esc;
+        } else {
+          chunk += c;  // raw UTF-8 bytes pass through untouched
+        }
+        break;
+    }
+    if (chunk.size() >= 512) {
+      server->sendContent(chunk.c_str());
+      chunk.clear();
+      resetTaskWatchdogIfSubscribed();  // each sendContent() is a blocking network write
+    }
+  }
+  if (!chunk.empty()) server->sendContent(chunk.c_str());
+  server->sendContent("\"}");
+  server->sendContent("");
 }
 
 namespace {

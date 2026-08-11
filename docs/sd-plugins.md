@@ -156,6 +156,12 @@ Two browse formats:
     },
     "page_size": 8,                         // 1..16; response should honor {limit}
 
+    "lists": [                              // optional named sub-catalogs (json only):
+      { "title": "All Books" },             // a picker screen precedes browsing;
+      { "title": "Favorites",               // each entry may override url and/or
+        "body": "{\"page\":{page},\"per_page\":{limit},\"list\":\"favorites\"}" }
+    ],                                      // omitted keys fall back to browse's
+
     // --- xml format (ignore the json fields above; fields become selectors) ---
     "item": "response",                     // local-name of the repeating element
     "container_element": "collection",      // presence marks a navigable folder (omit = flat)
@@ -224,7 +230,13 @@ Two browse formats:
   than an error.
 - **Pagination** (json): the browse request should return up to `{limit}`
   items; the firmware displays `page_size` and uses the extra row to know
-  another page exists. The page key cycles forward and wraps to page 1.
+  another page exists. Navigation matches the OPDS browser: a "Previous
+  page" row precedes the items past page 1 and a "Next page" row follows
+  them while more pages exist — tappable and button-reachable like any row.
+- **Lists** (json): with `browse.lists`, opening the catalog shows a picker
+  of the named entries first; each entry browses with its own url/body
+  overrides (server-side categories, shelves, sort orders). Back from the
+  book list returns to the picker.
 - **XML navigation**: Confirm on a folder (an item carrying `container_element`)
   descends into it, Back climbs out (Back at the root leaves the screen).
   With `resolve_urls`, server-relative URLs resolve against the browse URL's
@@ -236,16 +248,22 @@ Two browse formats:
 
 ### Heap budget (ESP32-C3, ~380KB total)
 
-- Manifest ≤ 8KB, token file ≤ 2KB, API responses ≤ 48KB (hard caps).
+- Manifest ≤ 8KB, token file ≤ 2KB, small API responses (auth, download-url
+  hop) ≤ 48KB (hard caps).
+- Browse responses (json and xml) stream to an SD temp file and are parsed
+  from it, so the raw body never occupies DRAM — services that inline heavy
+  per-item metadata (a page of BookFusion JSON runs 60+ KB) work unmodified.
+  A 1MB cap bounds a misbehaving server.
 - Catalog responses are parsed with a dynamically built ArduinoJson filter
-  containing only the declared field paths, so a ~20KB page parses into a few
-  KB instead of several times the body. Keep `page_size` at 8 unless the
-  service's items are tiny.
+  containing only the declared field paths, so a page parses into a few KB
+  no matter the body size.
+- One TLS session is kept alive across browse requests: repeated handshakes
+  permanently fragment the heap.
 - The book download streams to SD via `HttpDownloader`; file size is
   unconstrained.
-- An XML list response is held in RAM whole under the same 48KB cap, so a
-  single folder/feed should hold at most a few hundred entries; the engine
-  also stops after 200 entries. Split very large libraries into subfolders.
+- An XML list is parsed from the temp file in 2KB chunks; the engine stops
+  after 200 entries per folder/feed. Split very large libraries into
+  subfolders.
 
 ### Testing a new manifest
 

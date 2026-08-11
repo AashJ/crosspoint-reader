@@ -1,10 +1,16 @@
 #pragma once
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
+
+class HalFile;
+namespace freeink {
+class SecureHttpClient;
+}
 
 // One installed SD plugin, as surfaced in the on-device Plugins list.
 struct PluginRef {
@@ -32,13 +38,24 @@ bool anyPluginInstalled();
  */
 class PluginCatalogActivity final : public Activity {
  public:
-  enum class State { CHECK_WIFI, WIFI_SELECTION, LOADING, BROWSING, DOWNLOADING, DONE, ERROR, NO_TOKEN, AUTH };
+  enum class State {
+    CHECK_WIFI,
+    WIFI_SELECTION,
+    LIST_PICKER,
+    LOADING,
+    BROWSING,
+    DOWNLOADING,
+    DONE,
+    ERROR,
+    NO_TOKEN,
+    AUTH
+  };
 
+  // Both out of line: ctor and dtor instantiate ~unique_ptr<SecureHttpClient>,
+  // which needs the complete type.
   explicit PluginCatalogActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string manifestPath,
-                                 std::string title)
-      : Activity("PluginCatalog", renderer, mappedInput),
-        manifestPath(std::move(manifestPath)),
-        catalogTitle(std::move(title)) {}
+                                 std::string title);
+  ~PluginCatalogActivity() override;
 
   void onEnter() override;
   void onExit() override;
@@ -64,6 +81,14 @@ class PluginCatalogActivity final : public Activity {
     // JSON field paths (dotted); XML field selectors ("elem", "elem@attr", "@attr").
     std::string titlePath, authorPath, idPath, urlPath;
     int pageSize = 8;
+    // Optional named sub-catalogs ("lists"): each entry may override the
+    // browse url/body, so one service exposes several server-side views
+    // (categories, shelves, sort orders). When present (JSON lists only), a
+    // picker screen precedes browsing and Back returns to it.
+    struct BrowseList {
+      std::string title, url, body;
+    };
+    std::vector<BrowseList> browseLists;
     // XML list options:
     std::string xmlItem;                     // local-name of the repeating element (required)
     std::string xmlContainer;                // local-name whose presence marks a navigable folder
@@ -125,6 +150,11 @@ class PluginCatalogActivity final : public Activity {
   std::vector<std::pair<std::string, std::string>> config;  // {cfg.KEY} values
   int page = 1;
   bool hasMore = false;
+  int currentList = -1;  // index into manifest.browseLists; -1 = none/default
+  // One TLS session reused across browse requests (setReuse): repeated
+  // handshakes permanently fragment the heap. Freed on exit; a request falls
+  // back to a stack client when the allocation failed.
+  std::unique_ptr<freeink::SecureHttpClient> session;
   // XML-list folder navigation: current container URL and the trail back out.
   std::string browseCurrentUrl;
   std::vector<std::string> browseHistory;
@@ -146,20 +176,41 @@ class PluginCatalogActivity final : public Activity {
   bool saveToken(const std::string& value);
   void checkAndConnectWifi();
   void launchWifiSelection();
+  // Wi-Fi is up (or a token just arrived): open the list picker when the
+  // manifest defines browse lists, else fetch the first page directly.
+  void startBrowse();
+  // Synthetic pager rows, mirroring the OPDS browser: "Previous page" ahead
+  // of the items past page 1, "Next page" after them while more pages exist.
+  bool prevRowVisible() const;
+  bool nextRowVisible() const;
+  // Rows on the current screen: pager rows + items (BROWSING), or the browse
+  // lists (LIST_PICKER). selectorIndex runs over these.
+  int rowCount() const;
+  // Row selectorIndex points at → dispatch: pager rows page, picker rows pick,
+  // item rows open/download.
+  void activateRow(int row);
+  // Browse url/body with the selected browse list's overrides applied.
+  const std::string& activeBrowseUrl() const;
+  const std::string& activeBrowseBody() const;
   void fetchPage(int newPage);
   void fetchXmlList();
-  void activateSelected();  // XML list: navigate into a folder, else download
+  void activateItem(int itemIndex);  // XML list: navigate into a folder, else download
   void downloadItem(const Item& item);
   void beginAuth();
   void pollAuth();
   bool refreshCredentialToken();  // password grant: mint a token from config creds
-  // Substitutes + runs the browse request, retrying once after a fresh password
-  // grant on 401/403. Returns HTTP status (or -1 on transport failure).
-  int browseRequest(const std::string& urlTemplate, const std::string& bodyTemplate, std::string& response);
+  // Substitutes + runs the browse request, streaming the response body to
+  // `destPath` on the SD card (a page of catalog JSON can exceed what DRAM
+  // holds), retrying once after a fresh password grant on 401/403. Returns
+  // HTTP status (or -1 on transport failure).
+  int browseRequestToFile(const std::string& urlTemplate, const std::string& bodyTemplate, const char* destPath);
   // Returns the HTTP status, or -1 on transport failure / truncation / cap.
   // `out` holds the body for any real status (error bodies carry OAuth codes).
   int apiRequest(const std::string& url, const std::string& method, const std::string& body,
                  const std::vector<std::pair<std::string, std::string>>& headers, std::string& out);
+  // Same request, but the body goes to a file instead of DRAM.
+  int apiRequestToFile(const std::string& url, const std::string& method, const std::string& body,
+                       const std::vector<std::pair<std::string, std::string>>& headers, const char* destPath);
   std::string substituted(std::string tpl, const Item* item) const;
   bool preventAutoSleep() override { return true; }
 };

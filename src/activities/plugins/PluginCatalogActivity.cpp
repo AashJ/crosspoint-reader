@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <new>
 
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
@@ -28,9 +29,14 @@
 namespace {
 constexpr size_t MAX_MANIFEST_SIZE = 8 * 1024;
 constexpr size_t MAX_TOKEN_FILE_SIZE = 2 * 1024;
-// A page of filtered catalog JSON measures ~20KB; the cap bounds a
+// In-DRAM responses (auth, download-url hops) are small; the cap bounds a
 // misbehaving server, not normal use.
 constexpr size_t MAX_API_RESPONSE = 48 * 1024;
+// Browse responses stream to this SD temp file instead of DRAM: one page of
+// raw catalog JSON can run 60+ KB (BookFusion inlines heavy per-book
+// metadata), and buffering that in a std::string aborts on low heap.
+constexpr char BROWSE_TMP_PATH[] = "/.pcat_tmp.json";
+constexpr size_t MAX_BROWSE_RESPONSE = 1024 * 1024;
 constexpr int MAX_PAGE_SIZE = 16;
 constexpr int DOWNLOAD_PROGRESS_STEP_PERCENT = 5;
 constexpr unsigned long DOWNLOAD_PROGRESS_MIN_UPDATE_MS = 5000;
@@ -263,9 +269,11 @@ class XmlListParser {
     for (int i = 0; i < F_COUNT; i++) splitSelector(selectors[i], sel[i]);
   }
 
-  // Parses the whole document. Rows collected before a parse error are kept,
-  // mirroring the previous scanner, which stopped at the first bad tag.
-  std::vector<RawItem> parse(const std::string& xml) {
+  // Parses the whole document from an SD file in small chunks, so the raw XML
+  // (a large WebDAV multistatus, ...) never occupies DRAM. Rows collected
+  // before a parse error are kept, mirroring the previous scanner, which
+  // stopped at the first bad tag.
+  std::vector<RawItem> parseFile(HalFile& f) {
     XML_Parser p = XML_ParserCreate(nullptr);
     if (!p) return std::move(rows);
     XML_SetUserData(p, this);
@@ -277,9 +285,16 @@ class XmlListParser {
         [](void* self, const XML_Char* name) { static_cast<XmlListParser*>(self)->onEnd(name); });
     XML_SetCharacterDataHandler(
         p, [](void* self, const XML_Char* s, int len) { static_cast<XmlListParser*>(self)->onText(s, len); });
-    if (XML_Parse(p, xml.data(), static_cast<int>(xml.size()), XML_TRUE) != XML_STATUS_OK) {
-      LOG_ERR("PCAT", "XML parse error at line %lu: %s", XML_GetCurrentLineNumber(p),
-              XML_ErrorString(XML_GetErrorCode(p)));
+    std::vector<char> buf(2048);
+    for (;;) {
+      const int n = f.read(buf.data(), buf.size());
+      const bool last = n <= 0;
+      if (XML_Parse(p, buf.data(), last ? 0 : n, last ? XML_TRUE : XML_FALSE) != XML_STATUS_OK) {
+        LOG_ERR("PCAT", "XML parse error at line %lu: %s", XML_GetCurrentLineNumber(p),
+                XML_ErrorString(XML_GetErrorCode(p)));
+        break;
+      }
+      if (last) break;
     }
     destroyXmlParser(p);
     return std::move(rows);
@@ -466,6 +481,13 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.pageSize = browse["page_size"] | 8;
   if (manifest.pageSize < 1) manifest.pageSize = 1;
   if (manifest.pageSize > MAX_PAGE_SIZE) manifest.pageSize = MAX_PAGE_SIZE;
+  for (JsonVariantConst l : browse["lists"].as<JsonArrayConst>()) {
+    Manifest::BrowseList entry;
+    entry.title = l["title"] | "";
+    entry.url = l["url"] | "";
+    entry.body = l["body"] | "";
+    if (!entry.title.empty()) manifest.browseLists.push_back(std::move(entry));
+  }
   manifest.xmlItem = browse["item"] | "";
   manifest.xmlContainer = browse["container_element"] | "";
   manifest.xmlSkipSelf = browse["skip_self"] | false;
@@ -573,10 +595,19 @@ std::string PluginCatalogActivity::substituted(std::string tpl, const Item* item
   return tpl;
 }
 
+PluginCatalogActivity::PluginCatalogActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                             std::string manifestPath, std::string title)
+    : Activity("PluginCatalog", renderer, mappedInput),
+      manifestPath(std::move(manifestPath)),
+      catalogTitle(std::move(title)) {}
+
+PluginCatalogActivity::~PluginCatalogActivity() = default;
+
 int PluginCatalogActivity::apiRequest(const std::string& url, const std::string& method, const std::string& body,
                                       const std::vector<std::pair<std::string, std::string>>& headers,
                                       std::string& out) {
-  freeink::SecureHttpClient http;
+  freeink::SecureHttpClient tmp;
+  freeink::SecureHttpClient& http = session ? *session : tmp;
   http.setUserAgent("CrossPoint");
   // Same trust posture as every other SecureNet consumer: no CA bundle ships
   // with the transport, so verification is skipped; traffic stays encrypted.
@@ -622,16 +653,61 @@ int PluginCatalogActivity::apiRequest(const std::string& url, const std::string&
   return status;
 }
 
+int PluginCatalogActivity::apiRequestToFile(const std::string& url, const std::string& method, const std::string& body,
+                                            const std::vector<std::pair<std::string, std::string>>& headers,
+                                            const char* destPath) {
+  freeink::SecureHttpClient tmp;
+  freeink::SecureHttpClient& http = session ? *session : tmp;
+  http.setUserAgent("CrossPoint");
+  http.setInsecure();
+  http.setTimeout(30000);
+  if (!http.begin(url)) return -1;
+  for (const auto& h : headers) http.addHeader(h.first, h.second);
+
+  int status = -1;
+  bool writeOk = true;
+  size_t written = 0;
+  {
+    HalFile file;
+    if (!Storage.openFileForWrite("PCAT", destPath, file)) return -1;
+    status = http.sendRequest(method.c_str(), reinterpret_cast<const uint8_t*>(body.data()), body.size(),
+                              [&](const uint8_t* data, size_t len) {
+                                if (written + len > MAX_BROWSE_RESPONSE) {
+                                  writeOk = false;
+                                  return false;
+                                }
+                                if (file.write(data, len) != len) {
+                                  writeOk = false;
+                                  return false;
+                                }
+                                written += len;
+                                return true;
+                              });
+    file.flush();
+    // file closed at scope exit, before any Storage.remove of destPath
+  }
+  if (!writeOk || status < 0 || !http.responseComplete()) {
+    LOG_ERR("PCAT", "API request (to file) failed: status=%d writeOk=%d complete=%d %s", status, writeOk,
+            http.responseComplete(), url.c_str());
+    Storage.remove(destPath);
+    return -1;
+  }
+  return status;
+}
+
 void PluginCatalogActivity::onEnter() {
   Activity::onEnter();
   state = State::CHECK_WIFI;
   items.clear();
   page = 1;
   hasMore = false;
+  currentList = -1;
   selectorIndex = 0;
   consumeConfirm = false;
   errorMessage.clear();
   statusMessage = tr(STR_CHECKING_WIFI);
+  session.reset(new (std::nothrow) freeink::SecureHttpClient());
+  if (session) session->setReuse(true);
 
   if (!loadManifest()) {
     state = State::ERROR;
@@ -646,6 +722,8 @@ void PluginCatalogActivity::onEnter() {
 void PluginCatalogActivity::onExit() {
   Activity::onExit();
   items.clear();
+  session.reset();  // drop the reused TLS session before Wi-Fi teardown
+  Storage.remove(BROWSE_TMP_PATH);
   if (WiFi.getMode() != WIFI_MODE_NULL) {
     WiFi.disconnect(false);
     delay(30);
@@ -655,13 +733,27 @@ void PluginCatalogActivity::onExit() {
 
 void PluginCatalogActivity::checkAndConnectWifi() {
   if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
-    state = State::LOADING;
-    statusMessage = tr(STR_LOADING);
-    requestUpdate();
-    fetchPage(1);
+    startBrowse();
     return;
   }
   launchWifiSelection();
+}
+
+void PluginCatalogActivity::startBrowse() {
+  // Browse lists apply to JSON catalogs; XML lists navigate by folder instead.
+  if (!manifest.browseLists.empty() && !manifest.isXmlList() && currentList < 0) {
+    items.clear();
+    page = 1;
+    hasMore = false;
+    selectorIndex = 0;
+    state = State::LIST_PICKER;
+    requestUpdate();
+    return;
+  }
+  state = State::LOADING;
+  statusMessage = tr(STR_LOADING);
+  requestUpdate(true);
+  fetchPage(1);
 }
 
 void PluginCatalogActivity::launchWifiSelection() {
@@ -670,10 +762,7 @@ void PluginCatalogActivity::launchWifiSelection() {
   startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) {
                            if (!result.isCancelled) {
-                             state = State::LOADING;
-                             statusMessage = tr(STR_LOADING);
-                             requestUpdate(true);
-                             fetchPage(1);
+                             startBrowse();
                            } else {
                              state = State::ERROR;
                              errorMessage = tr(STR_WIFI_CONN_FAILED);
@@ -699,8 +788,8 @@ bool PluginCatalogActivity::refreshCredentialToken() {
   return true;
 }
 
-int PluginCatalogActivity::browseRequest(const std::string& urlTemplate, const std::string& bodyTemplate,
-                                         std::string& response) {
+int PluginCatalogActivity::browseRequestToFile(const std::string& urlTemplate, const std::string& bodyTemplate,
+                                               const char* destPath) {
   auto build = [&](std::string& url, std::string& body, std::vector<std::pair<std::string, std::string>>& headers) {
     url = substituted(urlTemplate, nullptr);
     body = substituted(bodyTemplate, nullptr);
@@ -711,11 +800,11 @@ int PluginCatalogActivity::browseRequest(const std::string& urlTemplate, const s
   std::string url, body;
   std::vector<std::pair<std::string, std::string>> headers;
   build(url, body, headers);
-  int status = apiRequest(url, manifest.browseMethod, body, headers, response);
+  int status = apiRequestToFile(url, manifest.browseMethod, body, headers, destPath);
   // A password-grant token expires; on 401/403 mint a fresh one and retry once.
   if ((status == 401 || status == 403) && manifest.hasPasswordGrant() && refreshCredentialToken()) {
     build(url, body, headers);
-    status = apiRequest(url, manifest.browseMethod, body, headers, response);
+    status = apiRequestToFile(url, manifest.browseMethod, body, headers, destPath);
   }
   return status;
 }
@@ -735,14 +824,15 @@ void PluginCatalogActivity::fetchXmlList() {
   }
   if (browseCurrentUrl.empty()) browseCurrentUrl = substituted(manifest.browseUrl, nullptr);
 
-  std::string response;
-  const int status = browseRequest(browseCurrentUrl, manifest.browseBody, response);
+  const int status = browseRequestToFile(browseCurrentUrl, manifest.browseBody, BROWSE_TMP_PATH);
   if (status == 401 || status == 403) {
+    Storage.remove(BROWSE_TMP_PATH);
     state = State::NO_TOKEN;
     requestUpdate();
     return;
   }
   if (status < 200 || status >= 300) {  // 207 Multi-Status counts as success
+    Storage.remove(BROWSE_TMP_PATH);
     state = State::ERROR;
     errorMessage = tr(STR_FETCH_FEED_FAILED);
     requestUpdate();
@@ -761,9 +851,13 @@ void PluginCatalogActivity::fetchXmlList() {
   const std::string selectors[XmlListParser::F_COUNT] = {manifest.urlPath, manifest.titlePath, manifest.authorPath,
                                                          manifest.idPath};
   XmlListParser parser(manifest.xmlItem, manifest.xmlContainer, selectors);
-  const auto rows = parser.parse(response);
-  response.clear();
-  response.shrink_to_fit();
+  std::vector<XmlListParser::RawItem> rows;
+  {
+    HalFile file;
+    if (Storage.openFileForRead("PCAT", BROWSE_TMP_PATH, file)) rows = parser.parseFile(file);
+    // file closed at scope exit, before the remove below
+  }
+  Storage.remove(BROWSE_TMP_PATH);
 
   items.clear();
   items.reserve(rows.size());
@@ -795,6 +889,36 @@ void PluginCatalogActivity::fetchXmlList() {
   requestUpdate();
 }
 
+bool PluginCatalogActivity::prevRowVisible() const {
+  return state == State::BROWSING && !manifest.isXmlList() && page > 1;
+}
+
+bool PluginCatalogActivity::nextRowVisible() const {
+  return state == State::BROWSING && !manifest.isXmlList() && hasMore;
+}
+
+int PluginCatalogActivity::rowCount() const {
+  if (state == State::LIST_PICKER) return static_cast<int>(manifest.browseLists.size());
+  if (state != State::BROWSING) return 0;
+  return static_cast<int>(items.size()) + (prevRowVisible() ? 1 : 0) + (nextRowVisible() ? 1 : 0);
+}
+
+const std::string& PluginCatalogActivity::activeBrowseUrl() const {
+  if (currentList >= 0 && currentList < static_cast<int>(manifest.browseLists.size()) &&
+      !manifest.browseLists[currentList].url.empty()) {
+    return manifest.browseLists[currentList].url;
+  }
+  return manifest.browseUrl;
+}
+
+const std::string& PluginCatalogActivity::activeBrowseBody() const {
+  if (currentList >= 0 && currentList < static_cast<int>(manifest.browseLists.size()) &&
+      !manifest.browseLists[currentList].body.empty()) {
+    return manifest.browseLists[currentList].body;
+  }
+  return manifest.browseBody;
+}
+
 void PluginCatalogActivity::fetchPage(const int newPage) {
   if (manifest.isXmlList()) {
     fetchXmlList();
@@ -808,15 +932,16 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
     return;
   }
 
-  std::string response;
-  const int status = browseRequest(manifest.browseUrl, manifest.browseBody, response);
+  const int status = browseRequestToFile(activeBrowseUrl(), activeBrowseBody(), BROWSE_TMP_PATH);
   if (status == 401 || status == 403) {
     // Stale or revoked token: back to the sign-in screen, not a raw error.
+    Storage.remove(BROWSE_TMP_PATH);
     state = State::NO_TOKEN;
     requestUpdate();
     return;
   }
   if (status < 200 || status >= 300) {
+    Storage.remove(BROWSE_TMP_PATH);
     state = State::ERROR;
     errorMessage = tr(STR_FETCH_FEED_FAILED);
     requestUpdate();
@@ -831,15 +956,37 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
   addFieldFilter(filter, manifest.itemsPath, manifest.bundleBasePath);
   addFieldFilter(filter, manifest.itemsPath, manifest.bundleFilesPath);
 
+  // Filtered parse straight from the SD temp file — the raw response never
+  // occupies DRAM, only the few fields the filter admits.
   JsonDocument doc;
-  if (deserializeJson(doc, response, DeserializationOption::Filter(filter)) != DeserializationError::Ok) {
-    state = State::ERROR;
-    errorMessage = tr(STR_PARSE_FEED_FAILED);
-    requestUpdate();
-    return;
+  {
+    HalFile file;
+    if (!Storage.openFileForRead("PCAT", BROWSE_TMP_PATH, file)) {
+      state = State::ERROR;
+      errorMessage = tr(STR_PARSE_FEED_FAILED);
+      requestUpdate();
+      return;
+    }
+    struct HalFileReader {
+      HalFile& f;
+      int read() { return f.read(); }
+      size_t readBytes(char* buf, size_t n) {
+        const int r = f.read(buf, n);
+        return r < 0 ? 0 : static_cast<size_t>(r);
+      }
+    } reader{file};
+    const auto parseErr = deserializeJson(doc, reader, DeserializationOption::Filter(filter));
+    // file closed at scope exit, before the remove below
+    if (parseErr != DeserializationError::Ok) {
+      LOG_ERR("PCAT", "browse JSON parse error: %s", parseErr.c_str());
+      Storage.remove(BROWSE_TMP_PATH);
+      state = State::ERROR;
+      errorMessage = tr(STR_PARSE_FEED_FAILED);
+      requestUpdate();
+      return;
+    }
   }
-  response.clear();
-  response.shrink_to_fit();
+  Storage.remove(BROWSE_TMP_PATH);
 
   JsonVariantConst itemsNode = resolvePath(doc.as<JsonVariantConst>(), manifest.itemsPath);
   JsonArrayConst arr = itemsNode.as<JsonArrayConst>();
@@ -936,10 +1083,7 @@ void PluginCatalogActivity::pollAuth() {
         requestUpdate();
         return;
       }
-      state = State::LOADING;
-      statusMessage = tr(STR_LOADING);
-      requestUpdate(true);
-      fetchPage(1);
+      startBrowse();
       return;
     }
     const std::string code = variantToString(resolvePath(root, manifest.authErrorPath));
@@ -1149,6 +1293,8 @@ void PluginCatalogActivity::loop() {
         launchWifiSelection();
       } else if (state == State::NO_TOKEN && manifest.hasDeviceCode()) {
         beginAuth();
+      } else if (!manifest.browseLists.empty() && !manifest.isXmlList() && currentList < 0) {
+        startBrowse();  // nothing picked yet: retry lands on the list picker
       } else {
         state = State::LOADING;
         statusMessage = tr(STR_LOADING);
@@ -1177,11 +1323,13 @@ void PluginCatalogActivity::loop() {
     return;
   }
 
-  // BROWSING
+  // BROWSING / LIST_PICKER: one list protocol; rowCount() spans the pager
+  // rows plus the items, or the browse lists.
   const ListLayout layout = GUI.getListLayout(renderer, /*hasSubtitle=*/true);
   const int rows = layout.pageItems;
+  const int count = rowCount();
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (!items.empty()) activateSelected();
+    if (count > 0) activateRow(selectorIndex);
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
@@ -1192,26 +1340,22 @@ void PluginCatalogActivity::loop() {
       statusMessage = tr(STR_LOADING);
       requestUpdate(true);
       fetchXmlList();
+    } else if (state == State::BROWSING && currentList >= 0) {
+      // Browsing a picked list: Back returns to the picker, not out.
+      currentList = -1;
+      startBrowse();
     } else {
       finish();
     }
     return;
   }
-  if (!manifest.isXmlList() && mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-    // Next API page; wraps to the first page after the last.
-    state = State::LOADING;
-    statusMessage = tr(STR_LOADING);
-    requestUpdate(true);
-    fetchPage(hasMore ? page + 1 : 1);
-    return;
-  }
 
-  if (!items.empty()) {
+  if (count > 0) {
     int row = -1;
     const auto touch = mappedInput.rowTouch(row, layout.list.y, layout.rowStep, rows);
     if (touch != MappedInputManager::RowTouch::None) {
       const int touched = selectorIndex / rows * rows + row;
-      if (touched >= 0 && touched < static_cast<int>(items.size())) {
+      if (touched >= 0 && touched < count) {
         if (touch == MappedInputManager::RowTouch::Down) {
           if (selectorIndex != touched) {
             selectorIndex = touched;
@@ -1219,34 +1363,54 @@ void PluginCatalogActivity::loop() {
           }
         } else {
           selectorIndex = touched;
-          activateSelected();
+          activateRow(selectorIndex);
         }
         return;
       }
     }
 
-    buttonNavigator.onNextRelease([this] {
-      selectorIndex = ButtonNavigator::nextIndex(selectorIndex, items.size());
+    buttonNavigator.onNextRelease([this, count] {
+      selectorIndex = ButtonNavigator::nextIndex(selectorIndex, count);
       requestUpdate();
     });
-    buttonNavigator.onPreviousRelease([this] {
-      selectorIndex = ButtonNavigator::previousIndex(selectorIndex, items.size());
+    buttonNavigator.onPreviousRelease([this, count] {
+      selectorIndex = ButtonNavigator::previousIndex(selectorIndex, count);
       requestUpdate();
     });
-    buttonNavigator.onNextContinuous([this, rows] {
-      selectorIndex = ButtonNavigator::nextPageIndex(selectorIndex, items.size(), rows);
+    buttonNavigator.onNextContinuous([this, rows, count] {
+      selectorIndex = ButtonNavigator::nextPageIndex(selectorIndex, count, rows);
       requestUpdate();
     });
-    buttonNavigator.onPreviousContinuous([this, rows] {
-      selectorIndex = ButtonNavigator::previousPageIndex(selectorIndex, items.size(), rows);
+    buttonNavigator.onPreviousContinuous([this, rows, count] {
+      selectorIndex = ButtonNavigator::previousPageIndex(selectorIndex, count, rows);
       requestUpdate();
     });
   }
 }
 
-void PluginCatalogActivity::activateSelected() {
-  if (items.empty() || selectorIndex < 0 || selectorIndex >= static_cast<int>(items.size())) return;
-  const Item& item = items[selectorIndex];
+void PluginCatalogActivity::activateRow(const int row) {
+  if (state == State::LIST_PICKER) {
+    if (row < 0 || row >= static_cast<int>(manifest.browseLists.size())) return;
+    currentList = row;
+    startBrowse();
+    return;
+  }
+  // The pager rows bracket the items: "Previous page" ahead of them past
+  // page 1, "Next page" after them while more pages exist.
+  const int itemIndex = row - (prevRowVisible() ? 1 : 0);
+  if (itemIndex == -1 || (nextRowVisible() && itemIndex == static_cast<int>(items.size()))) {
+    state = State::LOADING;
+    statusMessage = tr(STR_LOADING);
+    requestUpdate(true);
+    fetchPage(itemIndex == -1 ? page - 1 : page + 1);
+    return;
+  }
+  activateItem(itemIndex);
+}
+
+void PluginCatalogActivity::activateItem(const int itemIndex) {
+  if (itemIndex < 0 || itemIndex >= static_cast<int>(items.size())) return;
+  const Item& item = items[itemIndex];
   if (manifest.isXmlList() && item.isDir) {
     browseHistory.push_back(browseCurrentUrl);
     browseCurrentUrl = item.url;
@@ -1268,6 +1432,9 @@ void PluginCatalogActivity::render(RenderLock&&) {
   const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
 
   std::string header = catalogTitle;
+  if (state == State::BROWSING && currentList >= 0 && currentList < static_cast<int>(manifest.browseLists.size())) {
+    header = manifest.browseLists[currentList].title;
+  }
   if (state == State::BROWSING && page > 1) {
     char suffix[16];
     snprintf(suffix, sizeof(suffix), " %d", page);
@@ -1340,22 +1507,47 @@ void PluginCatalogActivity::render(RenderLock&&) {
     return;
   }
 
-  // BROWSING
+  // BROWSING / LIST_PICKER: one list body. Pager rows bracket the items,
+  // styled like the OPDS browser's navigation entries ("> " prefix):
+  // "Previous page" ahead of the items past page 1, "Next page" after them
+  // while more pages exist — tappable and button-reachable like any row.
   const ListLayout layout = GUI.getListLayout(renderer, /*hasSubtitle=*/true);
-  const bool onDir = manifest.isXmlList() && !items.empty() && items[selectorIndex].isDir;
-  const char* confirmLabel = onDir ? tr(STR_OPEN) : tr(STR_DOWNLOAD);
-  // XML lists page by folder navigation (Confirm/Back), not the API pager.
-  const char* moreLabel = (!manifest.isXmlList() && (hasMore || page > 1)) ? tr(STR_NEXT_PAGE) : "";
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, moreLabel, "");
+  const int count = rowCount();
+  const int prevOff = prevRowVisible() ? 1 : 0;
+  const int itemSel = selectorIndex - prevOff;
+  const char* confirmLabel;
+  if (state == State::LIST_PICKER) {
+    confirmLabel = count > 0 ? tr(STR_OPEN) : "";
+  } else if (prevOff && selectorIndex == 0) {
+    confirmLabel = tr(STR_PREV_PAGE);
+  } else if (nextRowVisible() && itemSel == static_cast<int>(items.size())) {
+    confirmLabel = tr(STR_NEXT_PAGE);
+  } else {
+    const bool onDir = manifest.isXmlList() && itemSel >= 0 && itemSel < static_cast<int>(items.size()) &&
+                       items[itemSel].isDir;
+    confirmLabel = items.empty() ? "" : (onDir ? tr(STR_OPEN) : tr(STR_DOWNLOAD));
+  }
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  if (items.empty()) {
+  if (count == 0) {
     renderer.drawCenteredText(UI_10_FONT_ID, centerY, tr(STR_NO_ENTRIES));
   } else {
     GUI.drawList(
-        renderer, layout.list, static_cast<int>(items.size()), selectorIndex,
-        [this](int i) { return manifest.isXmlList() && items[i].isDir ? "> " + items[i].title : items[i].title; },
-        [this](int i) { return items[i].author; });
+        renderer, layout.list, count, selectorIndex,
+        [this, prevOff](int i) -> std::string {
+          if (state == State::LIST_PICKER) return manifest.browseLists[i].title;
+          if (prevOff && i == 0) return std::string("> ") + tr(STR_PREV_PAGE);
+          const int item = i - prevOff;
+          if (item >= static_cast<int>(items.size())) return std::string("> ") + tr(STR_NEXT_PAGE);
+          return manifest.isXmlList() && items[item].isDir ? "> " + items[item].title : items[item].title;
+        },
+        [this, prevOff](int i) -> std::string {
+          if (state == State::LIST_PICKER) return "";
+          const int item = i - prevOff;
+          if (item < 0 || item >= static_cast<int>(items.size())) return "";  // pager rows
+          return items[item].author;
+        });
   }
   renderer.displayBuffer();
 }
