@@ -1523,8 +1523,8 @@ void PluginCatalogActivity::render(RenderLock&&) {
   } else if (nextRowVisible() && itemSel == static_cast<int>(items.size())) {
     confirmLabel = tr(STR_NEXT_PAGE);
   } else {
-    const bool onDir = manifest.isXmlList() && itemSel >= 0 && itemSel < static_cast<int>(items.size()) &&
-                       items[itemSel].isDir;
+    const bool onDir =
+        manifest.isXmlList() && itemSel >= 0 && itemSel < static_cast<int>(items.size()) && items[itemSel].isDir;
     confirmLabel = items.empty() ? "" : (onDir ? tr(STR_OPEN) : tr(STR_FETCH));
   }
   const char* up = count > 1 ? tr(STR_DIR_UP) : "";

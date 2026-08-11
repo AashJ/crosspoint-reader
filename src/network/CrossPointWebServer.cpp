@@ -1941,13 +1941,27 @@ void CrossPointWebServer::handleRelay() {
   chunk.reserve(576);
   for (const char c : respBody) {
     switch (c) {
-      case '"': chunk += "\\\""; break;
-      case '\\': chunk += "\\\\"; break;
-      case '\b': chunk += "\\b"; break;
-      case '\f': chunk += "\\f"; break;
-      case '\n': chunk += "\\n"; break;
-      case '\r': chunk += "\\r"; break;
-      case '\t': chunk += "\\t"; break;
+      case '"':
+        chunk += "\\\"";
+        break;
+      case '\\':
+        chunk += "\\\\";
+        break;
+      case '\b':
+        chunk += "\\b";
+        break;
+      case '\f':
+        chunk += "\\f";
+        break;
+      case '\n':
+        chunk += "\\n";
+        break;
+      case '\r':
+        chunk += "\\r";
+        break;
+      case '\t':
+        chunk += "\\t";
+        break;
       default:
         if (static_cast<unsigned char>(c) < 0x20) {
           char esc[8];
