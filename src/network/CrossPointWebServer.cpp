@@ -2026,8 +2026,9 @@ void CrossPointWebServer::handleCrypto() {
   WolfsslCrypto c;
 
   if (op == "random") {
-    const int n = req["len"] | 16;
-    std::vector<uint8_t> out(n > 0 ? n : 0);
+    static constexpr int kMaxRandomBytes = 4096;  // generous for keys/salts/tokens; blocks a runaway allocation
+    const int n = std::clamp(static_cast<int>(req["len"] | 16), 0, kMaxRandomBytes);
+    std::vector<uint8_t> out(n);
     if (!out.empty()) c.randomBytes(out.data(), out.size());
     resp["data"] = b64encode(out);
   } else if (op == "sha1") {
@@ -2423,7 +2424,12 @@ void CrossPointWebServer::handlePluginFs() {
     return;
   }
 
-  Storage.ensureDirectoryExists("/.crosspoint");
+  // ensureDirectoryExists() creates missing parents along the way, so this
+  // covers any depth under /.crosspoint/plugins/<name>/... in one call.
+  const size_t lastSlash = path.rfind('/');
+  if (lastSlash != std::string::npos && lastSlash > 0) {
+    Storage.ensureDirectoryExists(path.substr(0, lastSlash).c_str());
+  }
   HalFile f;
   if (!Storage.openFileForWrite("PLG", path, f)) {
     server->send(500, "application/json", "{\"error\":\"cannot write\"}");

@@ -145,8 +145,12 @@
           });
         }
       } catch (e) {
-        container.innerHTML = '<h2>' + (p.title || p.name) + '</h2>' +
-          '<p style="color:#c0392b">Failed to load plugin.</p>';
+        const h = document.createElement('h2');
+        h.textContent = p.title || p.name;
+        const msg = document.createElement('p');
+        msg.style.color = '#c0392b';
+        msg.textContent = 'Failed to load plugin.';
+        container.replaceChildren(h, msg);
       }
     }
   }
