@@ -2366,7 +2366,10 @@ void CrossPointWebServer::handleFetch() {
     Storage.remove(dest.c_str());
     char msg[96];
     const char* error = sdFull ? "sd write failed" : rangeUnsupported ? "range unsupported" : "download truncated";
-    snprintf(msg, sizeof(msg), "{\"error\":\"%s\",\"bytes\":%u}", error, (unsigned)written);
+    // complete:false matters once the heartbeat has committed HTTP 200 chunked:
+    // it is the only signal fetchToSd()'s resume loop still sees on this path
+    // (it then detects zero progress and throws instead of returning success).
+    snprintf(msg, sizeof(msg), "{\"error\":\"%s\",\"bytes\":%u,\"complete\":false}", error, (unsigned)written);
     LOG_ERR("WEB", "Fetch failed after %u bytes in %lu ms: %s", (unsigned)written, millis() - fetchStartedAt,
             url.c_str());
     sendFetchResult(502, msg);
@@ -2456,7 +2459,15 @@ void CrossPointWebServer::handlePluginJobSubmit() {
   const String action = req["action"] | "";
   std::string args;
   if (!req["args"].isNull()) serializeJson(req["args"], args);
-  if (!safeComponent(plugin) || action.isEmpty() || plugin.length() >= sizeof(PluginJob::plugin) ||
+  // The claim response embeds `action` in a snprintf-built JSON template, so
+  // it must be identifier-safe; anything needing escaping is rejected here.
+  const auto identifierSafe = [](const String& s) {
+    for (const char c : s) {
+      if (!isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-' && c != '.') return false;
+    }
+    return !s.isEmpty();
+  };
+  if (!safeComponent(plugin) || !identifierSafe(action) || plugin.length() >= sizeof(PluginJob::plugin) ||
       action.length() >= sizeof(PluginJob::action) || args.size() >= sizeof(PluginJob::args)) {
     server->send(400, "application/json", "{\"error\":\"bad plugin/action/args\"}");
     return;

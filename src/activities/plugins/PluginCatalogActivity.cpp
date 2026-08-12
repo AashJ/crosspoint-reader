@@ -547,8 +547,16 @@ bool PluginCatalogActivity::saveToken(const std::string& value) {
   serializeJson(doc, out);
   HalFile file;
   if (!Storage.openFileForWrite("PCAT", manifest.tokenFile, file)) return false;
-  file.write(out.data(), out.size());
+  const size_t written = file.write(out.data(), out.size());
   file.flush();
+  if (written != out.size()) {
+    // A short write (SD full, I/O fault) must not persist a truncated token:
+    // pollAuth would report success, then every later loadToken() fails.
+    LOG_ERR("PCAT", "short token write (%u of %u)", static_cast<unsigned>(written), static_cast<unsigned>(out.size()));
+    if (file.isOpen()) file.close();
+    Storage.remove(manifest.tokenFile.c_str());
+    return false;
+  }
   return true;
 }
 
@@ -1116,10 +1124,25 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
     std::string base = item.base;
     if (!base.empty() && base.back() != '/') base += '/';
     const size_t total = item.files.size();
+    // Written files, for rollback: a half-installed bundle folder would show
+    // up as a broken plugin/theme in the next discovery scan.
+    std::vector<std::string> written;
+    written.reserve(total);
+    const auto rollback = [&] {
+      for (const auto& path : written) Storage.remove(path.c_str());
+      Storage.rmdir(dir.c_str());  // only succeeds when the folder emptied out
+    };
     for (size_t i = 0; i < total; i++) {
       std::string rel = item.files[i];
       while (!rel.empty() && rel.front() == '/') rel.erase(rel.begin());
-      if (rel.empty() || rel.find("..") != std::string::npos) continue;  // skip unsafe entries
+      if (rel.empty() || rel.find("..") != std::string::npos) {
+        // A manifest listing traversal entries is hostile or broken either
+        // way; abort rather than install a bundle with silent holes.
+        LOG_ERR("PCAT", "unsafe bundle entry rejected: %s", item.files[i].c_str());
+        rollback();
+        fail(StrId::STR_DOWNLOAD_FAILED);
+        return;
+      }
       downloadProgress = i;
       downloadTotal = total;
       requestUpdate(true);
@@ -1133,9 +1156,11 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
       const auto res = HttpDownloader::downloadToFile(base + rel, dest);
       if (res != HttpDownloader::OK) {
         LOG_ERR("PCAT", "bundle file failed: %s (%d)", rel.c_str(), static_cast<int>(res));
+        rollback();
         fail(StrId::STR_DOWNLOAD_FAILED);
         return;
       }
+      written.push_back(dest);
     }
     state = State::DONE;
     statusMessage = item.title;
@@ -1174,11 +1199,20 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
 
   Item named = item;
   named.title = sanitizedFilename(item.title);
+  // {id}/{author}/{url} come raw from the catalog response; a hostile server
+  // could smuggle separators through them to escape destDir (the bundle
+  // branch guards its subdir the same way).
+  const std::string filename = substituted(manifest.filenameTpl, &named);
+  if (filename.empty() || filename.find("..") != std::string::npos || filename.find('/') != std::string::npos) {
+    LOG_ERR("PCAT", "unsafe filename rejected: %s", filename.c_str());
+    fail(StrId::STR_DOWNLOAD_FAILED);
+    return;
+  }
   std::string dest;
   dest.reserve(96);
   if (haveFolder) dest += folder;
   dest += '/';
-  dest += substituted(manifest.filenameTpl, &named);
+  dest += filename;
 
   const std::string dlUser = substituted(manifest.dlUser, &item);
   const std::string dlPass = substituted(manifest.dlPass, &item);
@@ -1216,14 +1250,25 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
     const std::string md5 = md5Hex(dest);
     std::string path = substituted(manifest.sidecarPath, &sidecarItem);
     substituteAll(path, "{md5}", md5);
-    std::string body = substituted(manifest.sidecarBody, &sidecarItem);
-    substituteAll(body, "{md5}", md5);
-    HalFile sidecar;
-    if (Storage.openFileForWrite("PCAT", path, sidecar)) {
-      sidecar.write(body.data(), body.size());
-      sidecar.flush();
+    // Sidecar paths legitimately contain '/', but the substituted fields must
+    // not climb out of the tree.
+    if (path.empty() || path.find("..") != std::string::npos) {
+      LOG_ERR("PCAT", "unsafe sidecar path rejected: %s", path.c_str());
     } else {
-      LOG_ERR("PCAT", "Sidecar write failed: %s", path.c_str());
+      std::string body = substituted(manifest.sidecarBody, &sidecarItem);
+      substituteAll(body, "{md5}", md5);
+      HalFile sidecar;
+      if (Storage.openFileForWrite("PCAT", path, sidecar)) {
+        if (sidecar.write(body.data(), body.size()) != body.size()) {
+          LOG_ERR("PCAT", "short sidecar write: %s", path.c_str());
+          if (sidecar.isOpen()) sidecar.close();
+          Storage.remove(path.c_str());
+        } else {
+          sidecar.flush();
+        }
+      } else {
+        LOG_ERR("PCAT", "Sidecar write failed: %s", path.c_str());
+      }
     }
   }
 
