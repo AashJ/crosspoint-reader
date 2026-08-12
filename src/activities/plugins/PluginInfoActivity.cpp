@@ -4,20 +4,17 @@
 #include <HalStorage.h>
 #include <I18n.h>
 
+#include <algorithm>
+
 #include "MappedInputManager.h"
+#include "components/CatalogScreens.h"
+#include "components/UIScale.h"
 #include "components/UITheme.h"
-#include "fontIds.h"
+
+namespace fui = freeink::ui;
 
 namespace {
-constexpr int LINE_STEP = 22;
 constexpr size_t MAX_README_SIZE = 24 * 1024;
-
-// Body geometry from the active theme, so margins line up with list rows.
-int contentX() { return UITheme::getInstance().getMetrics().contentSidePadding; }
-int bodyTop() {
-  const auto& m = UITheme::getInstance().getMetrics();
-  return m.topPadding + m.headerHeight + m.verticalSpacing;
-}
 
 // A very light markdown flattener for e-ink: drops heading/list/emphasis
 // markers and code fences, leaving readable plain text. No renderer needed.
@@ -44,13 +41,9 @@ void PluginInfoActivity::onEnter() {
   subscreenOpen = false;
   wrappedWidth = -1;
   loadParagraphs();
+  resetUi();
+  app.setScreen(&PluginInfoActivity::rootScreen, this);
   requestUpdate();
-}
-
-int PluginInfoActivity::visibleLines() const {
-  const int avail = renderer.getScreenHeight() - bodyTop() - UITheme::getInstance().getMetrics().buttonHintsHeight;
-  const int n = avail / LINE_STEP;
-  return n < 1 ? 1 : n;
 }
 
 // Read raw text into `paragraphs` without any measurement — safe to run in
@@ -85,10 +78,13 @@ void PluginInfoActivity::loadParagraphs() {
   }
 }
 
-// Word-wrap `paragraphs` into `lines` at the current content width. Run from
-// render(), where the width and font metrics are final.
+// Word-wrap `paragraphs` into `lines` at the current content width, measured
+// with the FreeInkUI body font the screen draws with. Runs on the render task,
+// where the width and font metrics are final.
 void PluginInfoActivity::ensureWrapped() {
-  const int wrapWidth = renderer.getScreenWidth() - contentX() * 2;
+  const int fontId = uiScaleSpec().bodyFontId;
+  const int sidePadding = UITheme::getInstance().getMetrics().contentSidePadding;
+  const int wrapWidth = renderer.getScreenWidth() - sidePadding * 2;
   if (wrappedWidth == wrapWidth) return;  // already wrapped for this width
   wrappedWidth = wrapWidth;
   lines.clear();
@@ -105,9 +101,9 @@ void PluginInfoActivity::ensureWrapped() {
       size_t sp = text.find(' ', i);
       std::string word = text.substr(i, sp == std::string::npos ? std::string::npos : sp - i);
       // Hard-break a single word wider than the line (e.g. a long URL).
-      while (renderer.getTextWidth(UI_10_FONT_ID, word.c_str()) > wrapWidth && word.size() > 1) {
+      while (renderer.getTextWidth(fontId, word.c_str()) > wrapWidth && word.size() > 1) {
         size_t cut = word.size();
-        while (cut > 1 && renderer.getTextWidth(UI_10_FONT_ID, word.substr(0, cut).c_str()) > wrapWidth) cut--;
+        while (cut > 1 && renderer.getTextWidth(fontId, word.substr(0, cut).c_str()) > wrapWidth) cut--;
         if (!cur.empty()) {
           lines.push_back(cur);
           cur.clear();
@@ -116,7 +112,7 @@ void PluginInfoActivity::ensureWrapped() {
         word = word.substr(cut);
       }
       const std::string trial = cur.empty() ? word : cur + " " + word;
-      if (renderer.getTextWidth(UI_10_FONT_ID, trial.c_str()) > wrapWidth && !cur.empty()) {
+      if (renderer.getTextWidth(fontId, trial.c_str()) > wrapWidth && !cur.empty()) {
         lines.push_back(cur);
         cur = word;
       } else {
@@ -126,6 +122,25 @@ void PluginInfoActivity::ensureWrapped() {
       i = sp + 1;
     }
     lines.push_back(cur);
+  }
+}
+
+void PluginInfoActivity::rootScreen(UiScreen& screen, void* user) {
+  static_cast<PluginInfoActivity*>(user)->buildScreen(screen);
+}
+
+void PluginInfoActivity::buildScreen(UiScreen& screen) {
+  ensureWrapped();  // wrap now that width + fonts are final
+  catalogScreenHeader(screen, renderer, plugin.title.c_str());
+
+  fui::TextStyle body = screen.theme().bodyText;
+  const int16_t lh = screen.target().lineHeight(body.font);
+  const int16_t sidePadding = static_cast<int16_t>(UITheme::getInstance().getMetrics().contentSidePadding);
+  fui::Rect bodyRect = screen.body();
+  visibleRows = std::max<int>(1, bodyRect.height / lh);
+  for (int i = 0; i < visibleRows && topLine + i < static_cast<int>(lines.size()); i++) {
+    const fui::Rect lineRect = screen.takeTop(lh).inset(fui::Insets{0, sidePadding, 0, sidePadding});
+    screen.target().text(lineRect, lines[topLine + i].c_str(), body);
   }
 }
 
@@ -148,7 +163,7 @@ void PluginInfoActivity::loop() {
     return;
   }
 
-  const int rows = visibleLines();
+  const int rows = visibleRows;
   const int maxTop = std::max(0, static_cast<int>(lines.size()) - rows);
   const auto scroll = [&](int delta) {
     const int next = std::min(std::max(0, topLine + delta), maxTop);
@@ -172,28 +187,13 @@ void PluginInfoActivity::loop() {
 
 void PluginInfoActivity::render(RenderLock&&) {
   renderer.clearScreen();
-  ensureWrapped();  // wrap now that width + fonts are final
-  const int pageWidth = renderer.getScreenWidth();
-  const auto& m = UITheme::getInstance().getMetrics();
-
-  GUI.drawHeader(renderer, Rect{0, m.topPadding, pageWidth, m.headerHeight}, plugin.title.c_str());
+  renderUi();
 
   const char* confirmLabel = plugin.hasCatalog ? tr(STR_OPEN) : "";
-  const int rows = visibleLines();
-  const bool canScroll = static_cast<int>(lines.size()) > rows;
+  const bool canScroll = static_cast<int>(lines.size()) > visibleRows;
   const char* up = canScroll ? tr(STR_DIR_UP) : "";
   const char* down = canScroll ? tr(STR_DIR_DOWN) : "";
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, up, down);
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-
-  const int x = contentX();
-  const int top = bodyTop();
-  const int maxWidth = pageWidth - x * 2;
-  for (int i = 0; i < rows && topLine + i < static_cast<int>(lines.size()); i++) {
-    // truncatedText is the same overflow guard drawList uses — a line can never
-    // run past the content width even if wrapping missed an edge case.
-    auto line = renderer.truncatedText(UI_10_FONT_ID, lines[topLine + i].c_str(), maxWidth);
-    renderer.drawText(UI_10_FONT_ID, x, top + i * LINE_STEP, line.c_str(), true);
-  }
   renderer.displayBuffer();
 }

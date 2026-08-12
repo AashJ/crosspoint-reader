@@ -20,12 +20,14 @@
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "components/CatalogScreens.h"
 #include "components/UITheme.h"
-#include "fontIds.h"
 #include "network/HttpDownloader.h"
 #include "util/BookCacheUtils.h"
 #include "util/PluginLocations.h"
 #include "util/QrUtils.h"
+
+namespace fui = freeink::ui;
 
 namespace {
 constexpr size_t MAX_MANIFEST_SIZE = 8 * 1024;
@@ -612,7 +614,7 @@ std::string PluginCatalogActivity::substituted(std::string tpl, const Item* item
 
 PluginCatalogActivity::PluginCatalogActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                              std::string manifestPath, std::string title)
-    : Activity("PluginCatalog", renderer, mappedInput),
+    : UiListActivity("PluginCatalog", renderer, mappedInput),
       manifestPath(std::move(manifestPath)),
       catalogTitle(std::move(title)) {}
 
@@ -717,14 +719,13 @@ int PluginCatalogActivity::apiRequestToFile(const std::string& url, const std::s
 }
 
 void PluginCatalogActivity::onEnter() {
-  Activity::onEnter();
+  UiListActivity::onEnter();
   state = State::CHECK_WIFI;
   items.clear();
+  rowsDirty = true;
   page = 1;
   hasMore = false;
   currentList = -1;
-  selectorIndex = 0;
-  consumeConfirm = false;
   errorMessage.clear();
   statusMessage = tr(STR_CHECKING_WIFI);
   session.reset(new (std::nothrow) freeink::SecureHttpClient());
@@ -764,7 +765,8 @@ void PluginCatalogActivity::startBrowse() {
     items.clear();
     page = 1;
     hasMore = false;
-    selectorIndex = 0;
+    releaseRows();
+    nav.reset();
     state = State::LIST_PICKER;
     requestUpdate();
     return;
@@ -866,6 +868,7 @@ void PluginCatalogActivity::fetchXmlList() {
   }
   Storage.remove(BROWSE_TMP_PATH);
 
+  releaseRows();
   items.clear();
   items.reserve(rows.size());
   for (const auto& row : rows) {
@@ -891,7 +894,7 @@ void PluginCatalogActivity::fetchXmlList() {
     return strcasecmp(a.title.c_str(), b.title.c_str()) < 0;
   });
   hasMore = false;
-  selectorIndex = 0;
+  nav.reset();
   state = State::BROWSING;
   requestUpdate();
 }
@@ -985,6 +988,7 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
 
   JsonVariantConst itemsNode = resolvePath(doc.as<JsonVariantConst>(), manifest.itemsPath);
   JsonArrayConst arr = itemsNode.as<JsonArrayConst>();
+  releaseRows();
   items.clear();
   if (!arr.isNull()) {
     items.reserve(manifest.pageSize);
@@ -1010,7 +1014,7 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
   }
   hasMore = static_cast<int>(items.size()) > manifest.pageSize;
   if (hasMore) items.resize(manifest.pageSize);
-  selectorIndex = 0;
+  nav.reset();
   state = State::BROWSING;
   requestUpdate();
 }
@@ -1228,22 +1232,20 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
   requestUpdate();
 }
 
-void PluginCatalogActivity::loop() {
-  if (state == State::WIFI_SELECTION || state == State::DOWNLOADING) return;
-
-  if (consumeConfirm && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    consumeConfirm = false;
-    return;
-  }
+// Every state except BROWSING/LIST_PICKER consumes the pass here; the base
+// list protocol (Back/Confirm, touch routing, swipe scroll, button
+// navigation) only ever runs for the two list states.
+bool PluginCatalogActivity::handleCustomInput() {
+  if (state == State::WIFI_SELECTION || state == State::DOWNLOADING) return true;
 
   if (state == State::AUTH) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       state = State::NO_TOKEN;
       requestUpdate();
-      return;
+      return true;
     }
     if (static_cast<long>(millis() - authNextPollMs) >= 0) pollAuth();
-    return;
+    return true;
   }
 
   if (state == State::ERROR || state == State::NO_TOKEN) {
@@ -1263,12 +1265,12 @@ void PluginCatalogActivity::loop() {
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       finish();
     }
-    return;
+    return true;
   }
 
   if (state == State::CHECK_WIFI || state == State::LOADING) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Back)) finish();
-    return;
+    return true;
   }
 
   if (state == State::DONE) {
@@ -1279,87 +1281,45 @@ void PluginCatalogActivity::loop() {
       state = State::BROWSING;
       requestUpdate();
     }
-    return;
+    return true;
   }
 
-  // BROWSING / LIST_PICKER: one list protocol; rowCount() spans the pager
-  // rows plus the items, or the browse lists.
-  const ListLayout layout = GUI.getListLayout(renderer, /*hasSubtitle=*/true);
-  const int rows = layout.pageItems;
-  const int count = rowCount();
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-    if (count > 0) activateRow(selectorIndex);
-    return;
-  }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    if (manifest.isXmlList() && !browseHistory.empty()) {
-      browseCurrentUrl = browseHistory.back();
-      browseHistory.pop_back();
-      beginLoading();
-      fetchXmlList();
-    } else if (state == State::BROWSING && currentList >= 0) {
-      // Browsing a picked list: Back returns to the picker, not out.
-      currentList = -1;
-      startBrowse();
-    } else {
-      finish();
-    }
-    return;
-  }
+  return false;
+}
 
-  if (count > 0) {
-    int row = -1;
-    const auto touch = mappedInput.rowTouch(row, layout.list.y, layout.rowStep, rows);
-    if (touch != MappedInputManager::RowTouch::None) {
-      const int touched = selectorIndex / rows * rows + row;
-      if (touched >= 0 && touched < count) {
-        if (touch == MappedInputManager::RowTouch::Down) {
-          if (selectorIndex != touched) {
-            selectorIndex = touched;
-            requestUpdate();
-          }
-        } else {
-          selectorIndex = touched;
-          activateRow(selectorIndex);
-        }
-        return;
-      }
-    }
-
-    buttonNavigator.onNextRelease([this, count] {
-      selectorIndex = ButtonNavigator::nextIndex(selectorIndex, count);
-      requestUpdate();
-    });
-    buttonNavigator.onPreviousRelease([this, count] {
-      selectorIndex = ButtonNavigator::previousIndex(selectorIndex, count);
-      requestUpdate();
-    });
-    buttonNavigator.onNextContinuous([this, rows, count] {
-      selectorIndex = ButtonNavigator::nextPageIndex(selectorIndex, count, rows);
-      requestUpdate();
-    });
-    buttonNavigator.onPreviousContinuous([this, rows, count] {
-      selectorIndex = ButtonNavigator::previousPageIndex(selectorIndex, count, rows);
-      requestUpdate();
-    });
+void PluginCatalogActivity::onBackButton() {
+  if (manifest.isXmlList() && !browseHistory.empty()) {
+    browseCurrentUrl = browseHistory.back();
+    browseHistory.pop_back();
+    beginLoading();
+    fetchXmlList();
+  } else if (state == State::BROWSING && currentList >= 0) {
+    // Browsing a picked list: Back returns to the picker, not out.
+    currentList = -1;
+    startBrowse();
+  } else {
+    finish();
   }
 }
 
-void PluginCatalogActivity::activateRow(const int row) {
+void PluginCatalogActivity::activateIndex(const int index) {
   if (state == State::LIST_PICKER) {
-    if (row < 0 || row >= static_cast<int>(manifest.browseLists.size())) return;
-    currentList = row;
+    if (index < 0 || index >= static_cast<int>(manifest.browseLists.size())) return;
+    app.clearTapFlash();
+    currentList = index;
     startBrowse();
     return;
   }
   // The pager rows bracket the items: "Previous page" ahead of them past
   // page 1, "Next page" after them while more pages exist.
-  const int itemIndex = row - (prevRowVisible() ? 1 : 0);
+  const int itemIndex = index - (prevRowVisible() ? 1 : 0);
   if (itemIndex == -1 || (nextRowVisible() && itemIndex == static_cast<int>(items.size()))) {
+    app.clearTapFlash();
     beginLoading();
     fetchPage(itemIndex == -1 ? page - 1 : page + 1);
     return;
   }
+  app.clearTapFlash();  // the row leaves this screen (folder, download view)
   activateItem(itemIndex);
 }
 
@@ -1376,14 +1336,7 @@ void PluginCatalogActivity::activateItem(const int itemIndex) {
   downloadItem(item);
 }
 
-void PluginCatalogActivity::render(RenderLock&&) {
-  renderer.clearScreen();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-  const auto& m = UITheme::getInstance().getMetrics();
-  const int centerY = pageHeight / 2;
-  const int lineHeight = renderer.getLineHeight(UI_10_FONT_ID);
-
+void PluginCatalogActivity::drawChrome() {
   std::string header = catalogTitle;
   if (state == State::BROWSING && currentList >= 0 && currentList < static_cast<int>(manifest.browseLists.size())) {
     header = manifest.browseLists[currentList].title;
@@ -1393,116 +1346,186 @@ void PluginCatalogActivity::render(RenderLock&&) {
     snprintf(suffix, sizeof(suffix), " %d", page);
     header += suffix;
   }
-  GUI.drawHeader(renderer, Rect{0, m.topPadding, pageWidth, m.headerHeight}, header.c_str());
+  const auto& m = UITheme::getInstance().getMetrics();
+  GUI.drawHeader(renderer, Rect{0, m.topPadding, renderer.getScreenWidth(), m.headerHeight}, header.c_str());
+}
 
-  if (state == State::CHECK_WIFI || state == State::LOADING) {
-    renderer.drawCenteredText(UI_10_FONT_ID, centerY, statusMessage.c_str());
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
-    return;
-  }
-
-  if (state == State::AUTH) {
-    // Device-code sign-in: verification URL (text + QR) and the user code.
-    const int top = m.topPadding + m.headerHeight + m.verticalSpacing;
-    renderer.drawCenteredText(UI_10_FONT_ID, top, authVerifyUrl.c_str());
-    renderer.drawCenteredText(UI_12_FONT_ID, top + 35, authUserCode.c_str(), true, EpdFontFamily::BOLD);
-    const int qrSize = 180;
-    QrUtils::drawQrCode(renderer, Rect{(pageWidth - qrSize) / 2, top + 70, qrSize, qrSize}, authVerifyUrl);
-    renderer.drawCenteredText(UI_10_FONT_ID, top + 70 + qrSize + 20, tr(STR_PLUGIN_AUTH_WAITING));
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
-    return;
-  }
-
-  if (state == State::ERROR || state == State::NO_TOKEN) {
-    const bool canSignIn = state == State::NO_TOKEN && manifest.hasDeviceCode();
-    if (state == State::NO_TOKEN) {
-      renderer.drawCenteredText(UI_10_FONT_ID, centerY,
-                                canSignIn ? tr(STR_PLUGIN_SIGN_IN_HINT) : tr(STR_PLUGIN_NOT_SIGNED_IN));
-    } else {
-      renderer.drawCenteredText(UI_10_FONT_ID, centerY - lineHeight, tr(STR_ERROR_MSG), true, EpdFontFamily::BOLD);
-      renderer.drawCenteredText(UI_10_FONT_ID, centerY + m.verticalSpacing, errorMessage.c_str());
+void PluginCatalogActivity::drawFooter() {
+  MappedInputManager::Labels labels;
+  switch (state) {
+    case State::BROWSING:
+    case State::LIST_PICKER: {
+      const int count = rowCount();
+      const int prevOff = prevRowVisible() ? 1 : 0;
+      const int itemSel = nav.selected - prevOff;
+      const char* confirmLabel;
+      if (state == State::LIST_PICKER) {
+        confirmLabel = count > 0 ? tr(STR_OPEN) : "";
+      } else if (prevOff && nav.selected == 0) {
+        confirmLabel = tr(STR_PREV_PAGE);
+      } else if (nextRowVisible() && itemSel == static_cast<int>(items.size())) {
+        confirmLabel = tr(STR_NEXT_PAGE);
+      } else {
+        const bool onDir =
+            manifest.isXmlList() && itemSel >= 0 && itemSel < static_cast<int>(items.size()) && items[itemSel].isDir;
+        confirmLabel = items.empty() ? "" : (onDir ? tr(STR_OPEN) : tr(STR_FETCH));
+      }
+      const char* up = count > 1 ? tr(STR_DIR_UP) : "";
+      const char* down = count > 1 ? tr(STR_DIR_DOWN) : "";
+      labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, up, down);
+      break;
     }
-    const char* confirmLabel = canSignIn ? tr(STR_PLUGIN_SIGN_IN) : tr(STR_RETRY);
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
-    return;
+    case State::ERROR:
+    case State::NO_TOKEN: {
+      const bool canSignIn = state == State::NO_TOKEN && manifest.hasDeviceCode();
+      labels = mappedInput.mapLabels(tr(STR_BACK), canSignIn ? tr(STR_PLUGIN_SIGN_IN) : tr(STR_RETRY), "", "");
+      break;
+    }
+    case State::DOWNLOADING:
+      labels = mappedInput.mapLabels("", "", "", "");
+      break;
+    default:  // CHECK_WIFI / LOADING / AUTH / DONE (and child-activity handoffs)
+      labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
+      break;
   }
-
-  if (state == State::DOWNLOADING) {
-    auto title = renderer.truncatedText(UI_10_FONT_ID, statusMessage.c_str(), pageWidth - m.contentSidePadding * 2);
-    renderer.drawCenteredText(UI_10_FONT_ID, centerY - lineHeight, tr(STR_DOWNLOADING));
-    renderer.drawCenteredText(UI_10_FONT_ID, centerY, title.c_str());
-    const int pct =
-        downloadTotal > 0 ? static_cast<int>(static_cast<uint64_t>(downloadProgress) * 100 / downloadTotal) : 0;
-    GUI.drawProgressBar(renderer,
-                        Rect{m.contentSidePadding, centerY + m.verticalSpacing + lineHeight,
-                             pageWidth - m.contentSidePadding * 2, m.progressBarHeight},
-                        pct, 100);
-    const auto labels = mappedInput.mapLabels("", "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
-    return;
-  }
-
-  if (state == State::DONE) {
-    auto title = renderer.truncatedText(UI_10_FONT_ID, statusMessage.c_str(), pageWidth - m.contentSidePadding * 2);
-    renderer.drawCenteredText(UI_10_FONT_ID, centerY - lineHeight, tr(STR_DOWNLOAD_COMPLETE), true,
-                              EpdFontFamily::BOLD);
-    renderer.drawCenteredText(UI_10_FONT_ID, centerY + m.verticalSpacing, title.c_str());
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer();
-    return;
-  }
-
-  // BROWSING / LIST_PICKER: one list body. Pager rows bracket the items:
-  // "« Previous page" ahead of the items past page 1, "Next page »" after
-  // them while more pages exist — tappable and button-reachable like any
-  // row. The direction markers come from the translated strings themselves.
-  const ListLayout layout = GUI.getListLayout(renderer, /*hasSubtitle=*/true);
-  const int count = rowCount();
-  const int prevOff = prevRowVisible() ? 1 : 0;
-  const int itemSel = selectorIndex - prevOff;
-  const char* confirmLabel;
-  if (state == State::LIST_PICKER) {
-    confirmLabel = count > 0 ? tr(STR_OPEN) : "";
-  } else if (prevOff && selectorIndex == 0) {
-    confirmLabel = tr(STR_PREV_PAGE);
-  } else if (nextRowVisible() && itemSel == static_cast<int>(items.size())) {
-    confirmLabel = tr(STR_NEXT_PAGE);
-  } else {
-    const bool onDir =
-        manifest.isXmlList() && itemSel >= 0 && itemSel < static_cast<int>(items.size()) && items[itemSel].isDir;
-    confirmLabel = items.empty() ? "" : (onDir ? tr(STR_OPEN) : tr(STR_FETCH));
-  }
-  const char* up = count > 1 ? tr(STR_DIR_UP) : "";
-  const char* down = count > 1 ? tr(STR_DIR_DOWN) : "";
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, up, down);
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
 
-  if (count == 0) {
-    renderer.drawCenteredText(UI_10_FONT_ID, centerY, tr(STR_NO_ENTRIES));
-  } else {
-    GUI.drawList(
-        renderer, layout.list, count, selectorIndex,
-        [this, prevOff](int i) -> std::string {
-          if (state == State::LIST_PICKER) return manifest.browseLists[i].title;
-          if (prevOff && i == 0) return tr(STR_PREV_PAGE);
-          const int item = i - prevOff;
-          if (item >= static_cast<int>(items.size())) return tr(STR_NEXT_PAGE);
-          return manifest.isXmlList() && items[item].isDir ? "> " + items[item].title : items[item].title;
-        },
-        [this, prevOff](int i) -> std::string {
-          if (state == State::LIST_PICKER) return "";
-          const int item = i - prevOff;
-          if (item < 0 || item >= static_cast<int>(items.size())) return "";  // pager rows
-          return items[item].author;
-        });
+void PluginCatalogActivity::buildScreen(UiScreen& screen) {
+  const auto& m = UITheme::getInstance().getMetrics();
+  // Content below the GUI.drawHeader band, above the button hints.
+  screen.setContentMargin(fui::Insets{static_cast<int16_t>(m.topPadding + m.headerHeight), 0,
+                                      static_cast<int16_t>(m.buttonHintsHeight), 0});
+  screen.spacer(static_cast<int16_t>(m.verticalSpacing));
+
+  switch (state) {
+    case State::BROWSING:
+    case State::LIST_PICKER:
+      buildBrowsingScreen(screen);
+      return;
+    case State::AUTH:
+      buildAuthScreen(screen);
+      return;
+    case State::DOWNLOADING:
+      catalogDownloadScreen(screen, statusMessage.c_str(), downloadProgress, downloadTotal);
+      return;
+    case State::DONE:
+      catalogCenteredBlock(screen, {{tr(STR_DOWNLOAD_COMPLETE), true}, {statusMessage.c_str()}});
+      return;
+    case State::ERROR:
+      if (mappedInput.hasTouch()) {
+        catalogCenteredBlock(screen, {{tr(STR_ERROR_MSG), true}, {errorMessage.c_str()}, {tr(STR_TAP_TO_RETRY)}});
+      } else {
+        catalogCenteredBlock(screen, {{tr(STR_ERROR_MSG), true}, {errorMessage.c_str()}});
+      }
+      return;
+    case State::NO_TOKEN:
+      catalogCenteredBlock(screen,
+                           {{manifest.hasDeviceCode() ? tr(STR_PLUGIN_SIGN_IN_HINT) : tr(STR_PLUGIN_NOT_SIGNED_IN)}});
+      return;
+    default:  // CHECK_WIFI / LOADING (and the brief child-activity handoffs)
+      screen.centeredText(statusMessage.c_str(), screen.theme().bodyText);
+      return;
   }
+}
+
+// Device-code sign-in: verification URL (text + QR) and the user code. The QR
+// bitmap itself is painted by render() into the rect measured here.
+void PluginCatalogActivity::buildAuthScreen(UiScreen& screen) {
+  fui::TextStyle centered = screen.theme().bodyText;
+  centered.align = fui::TextAlign::Center;
+  fui::TextStyle code = screen.theme().titleText;
+  code.align = fui::TextAlign::Center;
+  code.bold = true;
+  const int16_t lh = screen.target().lineHeight(centered.font);
+  const int16_t gap = screen.theme().spaceMd;
+
+  screen.target().text(screen.takeTop(lh, gap), authVerifyUrl.c_str(), centered);
+  screen.target().text(screen.takeTop(screen.target().lineHeight(code.font), gap), authUserCode.c_str(), code);
+
+  constexpr int16_t qrSize = 180;
+  const fui::Rect band = screen.takeTop(qrSize, gap);
+  authQrRect = fui::Rect{static_cast<int16_t>(band.x + (band.width - qrSize) / 2), band.y, qrSize, qrSize};
+
+  screen.target().text(screen.takeTop(lh), tr(STR_PLUGIN_AUTH_WAITING), centered);
+}
+
+void PluginCatalogActivity::buildBrowsingScreen(UiScreen& screen) {
+  if (rowsDirty) {
+    rebuildRowItems();
+    rowsDirty = false;
+  }
+
+  if (rowItems.empty()) {
+    screen.centeredText(tr(STR_NO_ENTRIES), screen.theme().bodyText);
+    return;
+  }
+
+  fui::ListProps props;
+  props.items = rowItems.data();
+  props.count = static_cast<uint16_t>(rowItems.size());
+  props.action = ACTION_ROW;
+  props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
+  props.valueInset = 8;               // air between the nav chevron and the row edge
+  syncListViewport(screen, props, /*hasSubtitle=*/true);
+  screen.list(props);
+}
+
+// Derives rowItems from the current state's row source: the browse lists
+// (LIST_PICKER) or the pager rows bracketing the items (BROWSING). Labels
+// point into `manifest`/`items` strings, which outlive the buffer.
+void PluginCatalogActivity::rebuildRowItems() {
+  rowItems.clear();
+  rowItems.reserve(rowCount());
+  if (state == State::LIST_PICKER) {
+    for (const auto& list : manifest.browseLists) {
+      fui::ListItem item;
+      item.label = list.title.c_str();
+      item.actionValue = static_cast<int16_t>(rowItems.size());
+      rowItems.push_back(item);
+    }
+    return;
+  }
+  if (prevRowVisible()) {
+    fui::ListItem prev;
+    prev.label = tr(STR_PREV_PAGE);
+    prev.value = ">";
+    prev.actionValue = static_cast<int16_t>(rowItems.size());
+    rowItems.push_back(prev);
+  }
+  for (const auto& entry : items) {
+    fui::ListItem item;
+    item.label = entry.title.c_str();
+    if (!entry.author.empty()) item.subtitle = entry.author.c_str();
+    if (entry.isDir) item.value = ">";
+    item.actionValue = static_cast<int16_t>(rowItems.size());
+    rowItems.push_back(item);
+  }
+  if (nextRowVisible()) {
+    fui::ListItem next;
+    next.label = tr(STR_NEXT_PAGE);
+    next.value = ">";
+    next.actionValue = static_cast<int16_t>(rowItems.size());
+    rowItems.push_back(next);
+  }
+}
+
+void PluginCatalogActivity::releaseRows() {
+  // The app's interaction table holds row indices (and hit rects) for the old
+  // rows; stop routing touches against it until the next render.
+  closeRouting();
+  rowsDirty = true;
+}
+
+void PluginCatalogActivity::render(RenderLock&&) {
+  renderer.clearScreen();
+  drawChrome();
+  renderUi();
+  // The QR is a raw-renderer overlay: FreeInkUI has no QR component, and
+  // QrUtils draws straight into the framebuffer the app just painted.
+  if (state == State::AUTH && authQrRect.width > 0) {
+    QrUtils::drawQrCode(renderer, Rect{authQrRect.x, authQrRect.y, authQrRect.width, authQrRect.height}, authVerifyUrl);
+  }
+  drawFooter();
   renderer.displayBuffer();
 }

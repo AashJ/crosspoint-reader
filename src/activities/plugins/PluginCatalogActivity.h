@@ -6,8 +6,7 @@
 #include <utility>
 #include <vector>
 
-#include "activities/Activity.h"
-#include "util/ButtonNavigator.h"
+#include "activities/UiListActivity.h"
 
 class HalFile;
 namespace freeink {
@@ -38,7 +37,7 @@ bool anyPluginInstalled();
  * paths), so a new service is an SD card file, not firmware. Anything the
  * vocabulary cannot express stays in the plugin's browser-side plugin.js.
  */
-class PluginCatalogActivity final : public Activity {
+class PluginCatalogActivity final : public UiListActivity {
  public:
   enum class State {
     CHECK_WIFI,
@@ -61,7 +60,6 @@ class PluginCatalogActivity final : public Activity {
 
   void onEnter() override;
   void onExit() override;
-  void loop() override;
   void render(RenderLock&&) override;
 
  private:
@@ -145,9 +143,12 @@ class PluginCatalogActivity final : public Activity {
   std::string manifestPath;
   std::string catalogTitle;
   Manifest manifest;
-  ButtonNavigator buttonNavigator;
   State state = State::LOADING;
   std::vector<Item> items;
+  // Row buffer over items/browseLists plus the synthetic pager rows; rebuilt
+  // lazily on the render task whenever rowsDirty (items or state changed).
+  std::vector<freeink::ui::ListItem> rowItems;
+  bool rowsDirty = true;
   std::string token;
   std::vector<std::pair<std::string, std::string>> config;  // {cfg.KEY} values
   int page = 1;
@@ -160,8 +161,6 @@ class PluginCatalogActivity final : public Activity {
   // XML-list folder navigation: current container URL and the trail back out.
   std::string browseCurrentUrl;
   std::vector<std::string> browseHistory;
-  int selectorIndex = 0;
-  bool consumeConfirm = false;
   std::string errorMessage;
   std::string statusMessage;
   size_t downloadProgress = 0;
@@ -171,6 +170,9 @@ class PluginCatalogActivity final : public Activity {
   unsigned long authIntervalMs = 5000;
   unsigned long authNextPollMs = 0;
   unsigned long authDeadlineMs = 0;
+  // QR placement measured by buildScreen (AUTH state); drawn as a raw-renderer
+  // overlay in render() after the app has painted.
+  freeink::ui::Rect authQrRect{};
 
   bool loadManifest();
   bool loadToken();
@@ -191,11 +193,23 @@ class PluginCatalogActivity final : public Activity {
   bool prevRowVisible() const;
   bool nextRowVisible() const;
   // Rows on the current screen: pager rows + items (BROWSING), or the browse
-  // lists (LIST_PICKER). selectorIndex runs over these.
+  // lists (LIST_PICKER); zero in every other state, which disables the base
+  // list protocol (routing, navigation) there.
   int rowCount() const;
-  // Row selectorIndex points at → dispatch: pager rows page, picker rows pick,
-  // item rows open/download.
-  void activateRow(int row);
+  int listCount() const override { return rowCount(); }
+  // Row dispatch: pager rows page, picker rows pick, item rows open/download.
+  void activateIndex(int index) override;
+  void buildScreen(UiScreen& screen) override;
+  bool handleCustomInput() override;
+  void onBackButton() override;
+  void drawChrome() override;
+  void drawFooter() override;
+  void rebuildRowItems();
+  // Items (and the interaction table indexing them) are about to be replaced:
+  // stop routing and mark the row buffer for rebuild.
+  void releaseRows();
+  void buildAuthScreen(UiScreen& screen);
+  void buildBrowsingScreen(UiScreen& screen);
   // Browse url/body with the selected browse list's overrides applied.
   const std::string& activeBrowseUrl() const;
   const std::string& activeBrowseBody() const;
