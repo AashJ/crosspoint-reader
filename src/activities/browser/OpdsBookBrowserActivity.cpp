@@ -279,8 +279,13 @@ void OpdsBookBrowserActivity::render(RenderLock&&) {
   MappedInputManager::Labels labels;
   switch (state) {
     case BrowserState::BROWSING: {
-      const char* confirmLabel =
-          (!entries.empty() && entries[selectorIndex].type == OpdsEntryType::BOOK) ? tr(STR_DOWNLOAD) : tr(STR_OPEN);
+      // Feeds open; books and the pager rows fetch, matching the plugin catalog.
+      const char* confirmLabel = tr(STR_OPEN);
+      if (!entries.empty()) {
+        const bool onPager = (prevRowPresent && selectorIndex == 0) ||
+                             (nextRowPresent && selectorIndex == static_cast<int>(entries.size()) - 1);
+        if (onPager || entries[selectorIndex].type == OpdsEntryType::BOOK) confirmLabel = tr(STR_FETCH);
+      }
       const char* searchLabel = (!searchTemplate.empty() && selectorIndex == 0) ? tr(STR_SEARCH) : tr(STR_DIR_UP);
       labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, searchLabel, tr(STR_DIR_DOWN));
       break;
@@ -336,10 +341,12 @@ void OpdsBookBrowserActivity::fetchFeed(const std::string& path) {
   entries = std::move(parser).getEntries();
 
   entries.reserve(entries.size() + (prevUrl.empty() ? 0 : 1) + (nextUrl.empty() ? 0 : 1));
-  if (!prevUrl.empty()) {
+  prevRowPresent = !prevUrl.empty();
+  nextRowPresent = !nextUrl.empty();
+  if (prevRowPresent) {
     entries.insert(entries.begin(), OpdsEntry{OpdsEntryType::NAVIGATION, tr(STR_PREV_PAGE), "", prevUrl, ""});
   }
-  if (!nextUrl.empty()) {
+  if (nextRowPresent) {
     entries.push_back(OpdsEntry{OpdsEntryType::NAVIGATION, tr(STR_NEXT_PAGE), "", nextUrl, ""});
   }
   if (feedTruncated) {

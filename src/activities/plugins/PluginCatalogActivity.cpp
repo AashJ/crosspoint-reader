@@ -1361,14 +1361,11 @@ void PluginCatalogActivity::drawFooter() {
       const char* confirmLabel;
       if (state == State::LIST_PICKER) {
         confirmLabel = count > 0 ? tr(STR_OPEN) : "";
-      } else if (prevOff && nav.selected == 0) {
-        confirmLabel = tr(STR_PREV_PAGE);
-      } else if (nextRowVisible() && itemSel == static_cast<int>(items.size())) {
-        confirmLabel = tr(STR_NEXT_PAGE);
       } else {
+        // Folders open; items and the pager rows both fetch from the server.
         const bool onDir =
             manifest.isXmlList() && itemSel >= 0 && itemSel < static_cast<int>(items.size()) && items[itemSel].isDir;
-        confirmLabel = items.empty() ? "" : (onDir ? tr(STR_OPEN) : tr(STR_FETCH));
+        confirmLabel = count == 0 ? "" : (onDir ? tr(STR_OPEN) : tr(STR_FETCH));
       }
       const char* up = count > 1 ? tr(STR_DIR_UP) : "";
       const char* down = count > 1 ? tr(STR_DIR_DOWN) : "";
