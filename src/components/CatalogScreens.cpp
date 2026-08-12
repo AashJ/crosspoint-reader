@@ -58,15 +58,23 @@ void catalogDownloadScreen(UiAppHost::UiScreen& screen, const char* status, cons
   centered.align = fui::TextAlign::Center;
   const int16_t lh = screen.target().lineHeight(centered.font);
   const int16_t gap = theme.spaceMd;
-  const int16_t barH = 16;
+  // The bar slot doubles as the transferred-bytes line when the total is
+  // unknown, so it must fit a text line.
+  const int16_t barH = total > 0 ? 16 : lh;
   const bool withCancel = cancelAction != fui::NO_ACTION;
   const int16_t btnH = withCancel ? theme.rowHeight : 0;
-  const int16_t blockH = static_cast<int16_t>(lh * 2 + barH + btnH + gap * (withCancel ? 3 : 2));
+  // The item title gets two padded lines: long book titles wrap once and then
+  // truncate, instead of running edge-to-edge in a single clipped line.
+  fui::TextStyle title = centered;
+  title.maxLines = 2;
+  const int16_t titleH = static_cast<int16_t>(lh * 2);
+  const int16_t pad = static_cast<int16_t>(UITheme::getInstance().getMetrics().contentSidePadding);
+  const int16_t blockH = static_cast<int16_t>(lh + titleH + barH + btnH + gap * (withCancel ? 3 : 2));
   const fui::Rect body = screen.body();
   if (body.height > blockH) screen.spacer(static_cast<int16_t>((body.height - blockH) / 2));
 
   screen.target().text(screen.takeTop(lh, gap), tr(STR_DOWNLOADING), centered);
-  screen.target().text(screen.takeTop(lh, gap), status, centered);
+  screen.target().text(screen.takeTop(titleH, gap).inset(fui::Insets{0, pad, 0, pad}), status, title);
 
   const fui::Rect bar = screen.takeTop(barH, gap).inset(fui::Insets{0, 50, 0, 50});
   if (total > 0) {
@@ -76,6 +84,18 @@ void catalogDownloadScreen(UiAppHost::UiScreen& screen, const char* status, cons
     progressProps.border = fui::Paint::solid(fui::Color::Black);
     progressProps.borderWidth = 1;
     fui::progressBar(screen.frame(), bar, progressProps);
+  } else if (progress > 0) {
+    // Chunked response: no Content-Length, so a percentage is impossible.
+    // Show the transferred bytes in the bar's slot so the download visibly
+    // advances instead of sitting at an empty bar until completion.
+    char bytes[24];
+    if (progress >= 1024 * 1024) {
+      snprintf(bytes, sizeof(bytes), "%u.%u MB", static_cast<unsigned>(progress >> 20),
+               static_cast<unsigned>((progress >> 10) % 1024 * 10 / 1024));
+    } else {
+      snprintf(bytes, sizeof(bytes), "%u KB", static_cast<unsigned>(progress >> 10));
+    }
+    screen.target().text(bar, bytes, centered);
   }
 
   if (withCancel) {

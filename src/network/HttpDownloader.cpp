@@ -77,7 +77,7 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
           if (sink.total == 0 && http.hasContentLength()) sink.total = http.getContentLength();
           if (!sink.write(data, len)) return false;
           sink.downloaded += len;
-          if (sink.progress && sink.total > 0) sink.progress(sink.downloaded, sink.total);
+          if (sink.progress) sink.progress(sink.downloaded, sink.total);
           return true;
         },
         [&sink]() { return sink.cancelFlag && *sink.cancelFlag; });
@@ -178,8 +178,9 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
     return HttpDownloader::HTTP_ERROR;
   }
 
-  // fetch_headers returns 0 for a chunked response (no Content-Length); leave
-  // total at 0 so progress stays silent and the size check is skipped.
+  // fetch_headers returns 0 for a chunked response (no Content-Length); total
+  // stays 0, which skips the size check and tells progress consumers the
+  // total is unknown (they show transferred bytes instead of a percentage).
   sink.total = contentLength > 0 ? static_cast<size_t>(contentLength) : 0;
 
   auto buf = makeUniqueNoThrow<char[]>(READ_CHUNK);
@@ -206,7 +207,7 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
       return HttpDownloader::FILE_ERROR;
     }
     sink.downloaded += read;
-    if (sink.progress && sink.total > 0) sink.progress(sink.downloaded, sink.total);
+    if (sink.progress) sink.progress(sink.downloaded, sink.total);
   }
 
   const bool complete = esp_http_client_is_complete_data_received(client);
