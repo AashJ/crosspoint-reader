@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
@@ -182,22 +183,16 @@ void readHeaders(JsonVariantConst node, std::vector<std::pair<std::string, std::
   }
 }
 
+// Returns `override` unless it's empty, in which case `fallback` applies.
+const std::string& pick(const std::string& override, const std::string& fallback) {
+  return override.empty() ? fallback : override;
+}
+
 // --- XML-list helpers -----------------------------------------------------
 std::string urlDecode(const std::string& s) {
-  std::string out;
-  out.reserve(s.size());
-  for (size_t i = 0; i < s.size(); i++) {
-    if (s[i] == '%' && i + 2 < s.size() && isxdigit((unsigned char)s[i + 1]) && isxdigit((unsigned char)s[i + 2])) {
-      auto hex = [](char c) { return c <= '9' ? c - '0' : (tolower(c) - 'a' + 10); };
-      out += static_cast<char>(hex(s[i + 1]) * 16 + hex(s[i + 2]));
-      i += 2;
-    } else if (s[i] == '+') {
-      out += ' ';
-    } else {
-      out += s[i];
-    }
-  }
-  return out;
+  std::string plusesAsSpaces = s;
+  std::replace(plusesAsSpaces.begin(), plusesAsSpaces.end(), '+', ' ');
+  return FsHelpers::decodeUriEscapes(plusesAsSpaces);
 }
 
 std::string urlEncodePath(const std::string& s) {
@@ -578,6 +573,26 @@ void PluginCatalogActivity::loadConfig() {
   }
 }
 
+void PluginCatalogActivity::fail(const StrId msg) {
+  state = State::ERROR;
+  errorMessage = I18N.get(msg);
+  requestUpdate();
+}
+
+void PluginCatalogActivity::beginLoading() {
+  state = State::LOADING;
+  statusMessage = tr(STR_LOADING);
+  requestUpdate(true);
+}
+
+std::vector<std::pair<std::string, std::string>> PluginCatalogActivity::substitutedHeaders(
+    const std::vector<std::pair<std::string, std::string>>& headers, const Item* item) const {
+  std::vector<std::pair<std::string, std::string>> out;
+  out.reserve(headers.size());
+  for (const auto& h : headers) out.emplace_back(h.first, substituted(h.second, item));
+  return out;
+}
+
 std::string PluginCatalogActivity::substituted(std::string tpl, const Item* item) const {
   substituteAll(tpl, "{token}", token);
   for (const auto& kv : config) substituteAll(tpl, ("{cfg." + kv.first + "}").c_str(), kv.second);
@@ -603,18 +618,27 @@ PluginCatalogActivity::PluginCatalogActivity(GfxRenderer& renderer, MappedInputM
 
 PluginCatalogActivity::~PluginCatalogActivity() = default;
 
-int PluginCatalogActivity::apiRequest(const std::string& url, const std::string& method, const std::string& body,
-                                      const std::vector<std::pair<std::string, std::string>>& headers,
-                                      std::string& out) {
-  freeink::SecureHttpClient tmp;
+freeink::SecureHttpClient* PluginCatalogActivity::openApiClient(
+    freeink::SecureHttpClient& tmp, const std::string& url,
+    const std::vector<std::pair<std::string, std::string>>& headers) {
   freeink::SecureHttpClient& http = session ? *session : tmp;
   http.setUserAgent("CrossPoint");
   // Same trust posture as every other SecureNet consumer: no CA bundle ships
   // with the transport, so verification is skipped; traffic stays encrypted.
   http.setInsecure();
   http.setTimeout(30000);
-  if (!http.begin(url)) return -1;
+  if (!http.begin(url)) return nullptr;
   for (const auto& h : headers) http.addHeader(h.first, h.second);
+  return &http;
+}
+
+int PluginCatalogActivity::apiRequest(const std::string& url, const std::string& method, const std::string& body,
+                                      const std::vector<std::pair<std::string, std::string>>& headers,
+                                      std::string& out) {
+  freeink::SecureHttpClient tmp;
+  freeink::SecureHttpClient* httpPtr = openApiClient(tmp, url, headers);
+  if (!httpPtr) return -1;
+  freeink::SecureHttpClient& http = *httpPtr;
 
   out.clear();
   bool overflow = false;
@@ -657,12 +681,9 @@ int PluginCatalogActivity::apiRequestToFile(const std::string& url, const std::s
                                             const std::vector<std::pair<std::string, std::string>>& headers,
                                             const char* destPath) {
   freeink::SecureHttpClient tmp;
-  freeink::SecureHttpClient& http = session ? *session : tmp;
-  http.setUserAgent("CrossPoint");
-  http.setInsecure();
-  http.setTimeout(30000);
-  if (!http.begin(url)) return -1;
-  for (const auto& h : headers) http.addHeader(h.first, h.second);
+  freeink::SecureHttpClient* httpPtr = openApiClient(tmp, url, headers);
+  if (!httpPtr) return -1;
+  freeink::SecureHttpClient& http = *httpPtr;
 
   int status = -1;
   bool writeOk = true;
@@ -710,9 +731,7 @@ void PluginCatalogActivity::onEnter() {
   if (session) session->setReuse(true);
 
   if (!loadManifest()) {
-    state = State::ERROR;
-    errorMessage = tr(STR_PLUGIN_MANIFEST_INVALID);
-    requestUpdate();
+    fail(StrId::STR_PLUGIN_MANIFEST_INVALID);
     return;
   }
   requestUpdate();
@@ -750,9 +769,7 @@ void PluginCatalogActivity::startBrowse() {
     requestUpdate();
     return;
   }
-  state = State::LOADING;
-  statusMessage = tr(STR_LOADING);
-  requestUpdate(true);
+  beginLoading();
   fetchPage(1);
 }
 
@@ -764,18 +781,14 @@ void PluginCatalogActivity::launchWifiSelection() {
                            if (!result.isCancelled) {
                              startBrowse();
                            } else {
-                             state = State::ERROR;
-                             errorMessage = tr(STR_WIFI_CONN_FAILED);
-                             requestUpdate();
+                             fail(StrId::STR_WIFI_CONN_FAILED);
                            }
                          });
 }
 
 bool PluginCatalogActivity::refreshCredentialToken() {
   loadConfig();
-  std::vector<std::pair<std::string, std::string>> headers;
-  headers.reserve(manifest.authHeaders.size());
-  for (const auto& h : manifest.authHeaders) headers.emplace_back(h.first, substituted(h.second, nullptr));
+  const auto headers = substitutedHeaders(manifest.authHeaders, nullptr);
   std::string response;
   const int status = apiRequest(substituted(manifest.authUrl, nullptr), manifest.authMethod,
                                 substituted(manifest.authBody, nullptr), headers, response);
@@ -793,9 +806,7 @@ int PluginCatalogActivity::browseRequestToFile(const std::string& urlTemplate, c
   auto build = [&](std::string& url, std::string& body, std::vector<std::pair<std::string, std::string>>& headers) {
     url = substituted(urlTemplate, nullptr);
     body = substituted(bodyTemplate, nullptr);
-    headers.clear();
-    headers.reserve(manifest.browseHeaders.size());
-    for (const auto& h : manifest.browseHeaders) headers.emplace_back(h.first, substituted(h.second, nullptr));
+    headers = substitutedHeaders(manifest.browseHeaders, nullptr);
   };
   std::string url, body;
   std::vector<std::pair<std::string, std::string>> headers;
@@ -817,9 +828,7 @@ void PluginCatalogActivity::fetchXmlList() {
     return;
   }
   if (manifest.xmlItem.empty()) {
-    state = State::ERROR;
-    errorMessage = tr(STR_PLUGIN_MANIFEST_INVALID);
-    requestUpdate();
+    fail(StrId::STR_PLUGIN_MANIFEST_INVALID);
     return;
   }
   if (browseCurrentUrl.empty()) browseCurrentUrl = substituted(manifest.browseUrl, nullptr);
@@ -833,9 +842,7 @@ void PluginCatalogActivity::fetchXmlList() {
   }
   if (status < 200 || status >= 300) {  // 207 Multi-Status counts as success
     Storage.remove(BROWSE_TMP_PATH);
-    state = State::ERROR;
-    errorMessage = tr(STR_FETCH_FEED_FAILED);
-    requestUpdate();
+    fail(StrId::STR_FETCH_FEED_FAILED);
     return;
   }
 
@@ -904,19 +911,13 @@ int PluginCatalogActivity::rowCount() const {
 }
 
 const std::string& PluginCatalogActivity::activeBrowseUrl() const {
-  if (currentList >= 0 && currentList < static_cast<int>(manifest.browseLists.size()) &&
-      !manifest.browseLists[currentList].url.empty()) {
-    return manifest.browseLists[currentList].url;
-  }
-  return manifest.browseUrl;
+  if (currentList < 0 || currentList >= static_cast<int>(manifest.browseLists.size())) return manifest.browseUrl;
+  return pick(manifest.browseLists[currentList].url, manifest.browseUrl);
 }
 
 const std::string& PluginCatalogActivity::activeBrowseBody() const {
-  if (currentList >= 0 && currentList < static_cast<int>(manifest.browseLists.size()) &&
-      !manifest.browseLists[currentList].body.empty()) {
-    return manifest.browseLists[currentList].body;
-  }
-  return manifest.browseBody;
+  if (currentList < 0 || currentList >= static_cast<int>(manifest.browseLists.size())) return manifest.browseBody;
+  return pick(manifest.browseLists[currentList].body, manifest.browseBody);
 }
 
 void PluginCatalogActivity::fetchPage(const int newPage) {
@@ -942,9 +943,7 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
   }
   if (status < 200 || status >= 300) {
     Storage.remove(BROWSE_TMP_PATH);
-    state = State::ERROR;
-    errorMessage = tr(STR_FETCH_FEED_FAILED);
-    requestUpdate();
+    fail(StrId::STR_FETCH_FEED_FAILED);
     return;
   }
 
@@ -962,9 +961,7 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
   {
     HalFile file;
     if (!Storage.openFileForRead("PCAT", BROWSE_TMP_PATH, file)) {
-      state = State::ERROR;
-      errorMessage = tr(STR_PARSE_FEED_FAILED);
-      requestUpdate();
+      fail(StrId::STR_PARSE_FEED_FAILED);
       return;
     }
     struct HalFileReader {
@@ -980,9 +977,7 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
     if (parseErr != DeserializationError::Ok) {
       LOG_ERR("PCAT", "browse JSON parse error: %s", parseErr.c_str());
       Storage.remove(BROWSE_TMP_PATH);
-      state = State::ERROR;
-      errorMessage = tr(STR_PARSE_FEED_FAILED);
-      requestUpdate();
+      fail(StrId::STR_PARSE_FEED_FAILED);
       return;
     }
   }
@@ -1021,21 +1016,15 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
 }
 
 void PluginCatalogActivity::beginAuth() {
-  state = State::LOADING;
-  statusMessage = tr(STR_LOADING);
-  requestUpdate(true);
+  beginLoading();
 
-  std::vector<std::pair<std::string, std::string>> headers;
-  headers.reserve(manifest.authHeaders.size());
-  for (const auto& h : manifest.authHeaders) headers.emplace_back(h.first, substituted(h.second, nullptr));
+  const auto headers = substitutedHeaders(manifest.authHeaders, nullptr);
   std::string response;
   const int status = apiRequest(substituted(manifest.authUrl, nullptr), manifest.authMethod,
                                 substituted(manifest.authBody, nullptr), headers, response);
   JsonDocument doc;
   if (status < 200 || status >= 300 || deserializeJson(doc, response) != DeserializationError::Ok) {
-    state = State::ERROR;
-    errorMessage = tr(STR_PLUGIN_AUTH_FAILED);
-    requestUpdate();
+    fail(StrId::STR_PLUGIN_AUTH_FAILED);
     return;
   }
   const JsonVariantConst root = doc.as<JsonVariantConst>();
@@ -1045,9 +1034,7 @@ void PluginCatalogActivity::beginAuth() {
   const long interval = resolvePath(root, manifest.authIntervalPath) | 5L;
   const long expires = resolvePath(root, manifest.authExpiresPath) | 900L;
   if (authUserCode.empty() || authDeviceCode.empty()) {
-    state = State::ERROR;
-    errorMessage = tr(STR_PLUGIN_AUTH_FAILED);
-    requestUpdate();
+    fail(StrId::STR_PLUGIN_AUTH_FAILED);
     return;
   }
   authIntervalMs = (interval < 3 ? 3 : interval) * 1000UL;
@@ -1060,9 +1047,7 @@ void PluginCatalogActivity::beginAuth() {
 void PluginCatalogActivity::pollAuth() {
   authNextPollMs = millis() + authIntervalMs;
 
-  std::vector<std::pair<std::string, std::string>> headers;
-  headers.reserve(manifest.pollHeaders.size());
-  for (const auto& h : manifest.pollHeaders) headers.emplace_back(h.first, substituted(h.second, nullptr));
+  const auto headers = substitutedHeaders(manifest.pollHeaders, nullptr);
   std::string url = substituted(manifest.pollUrl, nullptr);
   std::string body = substituted(manifest.pollBody, nullptr);
   substituteAll(url, "{device_code}", authDeviceCode);
@@ -1078,9 +1063,7 @@ void PluginCatalogActivity::pollAuth() {
     const std::string newToken = variantToString(resolvePath(root, manifest.authTokenPath));
     if (!newToken.empty()) {
       if (!saveToken(newToken)) {
-        state = State::ERROR;
-        errorMessage = tr(STR_PLUGIN_AUTH_FAILED);
-        requestUpdate();
+        fail(StrId::STR_PLUGIN_AUTH_FAILED);
         return;
       }
       startBrowse();
@@ -1090,18 +1073,14 @@ void PluginCatalogActivity::pollAuth() {
     if (code == "slow_down") {
       authIntervalMs += 5000;
     } else if (code == "expired_token" || code == "access_denied") {
-      state = State::ERROR;
-      errorMessage = tr(STR_PLUGIN_AUTH_FAILED);
-      requestUpdate();
+      fail(StrId::STR_PLUGIN_AUTH_FAILED);
       return;
     }
     // authorization_pending (or anything unrecognized): keep polling
   }
 
   if (static_cast<long>(millis() - authDeadlineMs) >= 0) {
-    state = State::ERROR;
-    errorMessage = tr(STR_PLUGIN_AUTH_FAILED);
-    requestUpdate();
+    fail(StrId::STR_PLUGIN_AUTH_FAILED);
   }
 }
 
@@ -1118,9 +1097,7 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
     const std::string subdir = substituted(manifest.bundleSubdir, &item);
     // Reject path traversal in the subdir (a hostile catalog could escape).
     if (subdir.empty() || subdir.find("..") != std::string::npos || subdir.front() == '/') {
-      state = State::ERROR;
-      errorMessage = tr(STR_DOWNLOAD_FAILED);
-      requestUpdate();
+      fail(StrId::STR_DOWNLOAD_FAILED);
       return;
     }
     std::string dir = manifest.destDir;
@@ -1129,9 +1106,7 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
     dir += subdir;
     if (!Storage.exists(dir.c_str()) && !Storage.mkdir(dir.c_str())) {
       LOG_ERR("PCAT", "bundle mkdir failed: %s", dir.c_str());
-      state = State::ERROR;
-      errorMessage = tr(STR_DOWNLOAD_FAILED);
-      requestUpdate();
+      fail(StrId::STR_DOWNLOAD_FAILED);
       return;
     }
     std::string base = item.base;
@@ -1154,9 +1129,7 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
       const auto res = HttpDownloader::downloadToFile(base + rel, dest);
       if (res != HttpDownloader::OK) {
         LOG_ERR("PCAT", "bundle file failed: %s (%d)", rel.c_str(), static_cast<int>(res));
-        state = State::ERROR;
-        errorMessage = tr(STR_DOWNLOAD_FAILED);
-        requestUpdate();
+        fail(StrId::STR_DOWNLOAD_FAILED);
         return;
       }
     }
@@ -1169,30 +1142,22 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
   // Resolve the file URL: either the template itself, or one API hop away.
   std::string fileUrl = substituted(manifest.dlUrl, &item);
   if (!manifest.dlUrlPath.empty()) {
-    std::vector<std::pair<std::string, std::string>> headers;
-    headers.reserve(manifest.dlHeaders.size());
-    for (const auto& h : manifest.dlHeaders) headers.emplace_back(h.first, substituted(h.second, &item));
+    const auto headers = substitutedHeaders(manifest.dlHeaders, &item);
     std::string response;
     const int status = apiRequest(fileUrl, manifest.dlMethod, substituted(manifest.dlBody, &item), headers, response);
     if (status < 200 || status >= 300) {
-      state = State::ERROR;
-      errorMessage = tr(STR_DOWNLOAD_FAILED);
-      requestUpdate();
+      fail(StrId::STR_DOWNLOAD_FAILED);
       return;
     }
     JsonDocument doc;
     if (deserializeJson(doc, response) != DeserializationError::Ok) {
-      state = State::ERROR;
-      errorMessage = tr(STR_DOWNLOAD_FAILED);
-      requestUpdate();
+      fail(StrId::STR_DOWNLOAD_FAILED);
       return;
     }
     fileUrl = variantToString(resolvePath(doc.as<JsonVariantConst>(), manifest.dlUrlPath));
   }
   if (fileUrl.empty()) {
-    state = State::ERROR;
-    errorMessage = tr(STR_DOWNLOAD_FAILED);
-    requestUpdate();
+    fail(StrId::STR_DOWNLOAD_FAILED);
     return;
   }
 
@@ -1213,9 +1178,7 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
 
   const std::string dlUser = substituted(manifest.dlUser, &item);
   const std::string dlPass = substituted(manifest.dlPass, &item);
-  std::vector<std::pair<std::string, std::string>> dlHeaders;
-  dlHeaders.reserve(manifest.dlHeaders.size());
-  for (const auto& h : manifest.dlHeaders) dlHeaders.emplace_back(h.first, substituted(h.second, &item));
+  const auto dlHeaders = substitutedHeaders(manifest.dlHeaders, &item);
   int lastRenderedPercent = -1;
   unsigned long lastProgressUpdateMs = 0;
   const auto result = HttpDownloader::downloadToFile(
@@ -1237,9 +1200,7 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
 
   if (result != HttpDownloader::OK) {
     LOG_ERR("PCAT", "Download failed: %d", static_cast<int>(result));
-    state = State::ERROR;
-    errorMessage = tr(STR_DOWNLOAD_FAILED);
-    requestUpdate();
+    fail(StrId::STR_DOWNLOAD_FAILED);
     return;
   }
   clearBookCache(dest);
@@ -1296,9 +1257,7 @@ void PluginCatalogActivity::loop() {
       } else if (!manifest.browseLists.empty() && !manifest.isXmlList() && currentList < 0) {
         startBrowse();  // nothing picked yet: retry lands on the list picker
       } else {
-        state = State::LOADING;
-        statusMessage = tr(STR_LOADING);
-        requestUpdate();
+        beginLoading();
         fetchPage(page);
       }
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
@@ -1336,9 +1295,7 @@ void PluginCatalogActivity::loop() {
     if (manifest.isXmlList() && !browseHistory.empty()) {
       browseCurrentUrl = browseHistory.back();
       browseHistory.pop_back();
-      state = State::LOADING;
-      statusMessage = tr(STR_LOADING);
-      requestUpdate(true);
+      beginLoading();
       fetchXmlList();
     } else if (state == State::BROWSING && currentList >= 0) {
       // Browsing a picked list: Back returns to the picker, not out.
@@ -1399,9 +1356,7 @@ void PluginCatalogActivity::activateRow(const int row) {
   // page 1, "Next page" after them while more pages exist.
   const int itemIndex = row - (prevRowVisible() ? 1 : 0);
   if (itemIndex == -1 || (nextRowVisible() && itemIndex == static_cast<int>(items.size()))) {
-    state = State::LOADING;
-    statusMessage = tr(STR_LOADING);
-    requestUpdate(true);
+    beginLoading();
     fetchPage(itemIndex == -1 ? page - 1 : page + 1);
     return;
   }
@@ -1414,9 +1369,7 @@ void PluginCatalogActivity::activateItem(const int itemIndex) {
   if (manifest.isXmlList() && item.isDir) {
     browseHistory.push_back(browseCurrentUrl);
     browseCurrentUrl = item.url;
-    state = State::LOADING;
-    statusMessage = tr(STR_LOADING);
-    requestUpdate(true);
+    beginLoading();
     fetchXmlList();
     return;
   }

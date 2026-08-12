@@ -1,4 +1,6 @@
 #pragma once
+#include <I18n.h>
+
 #include <memory>
 #include <string>
 #include <utility>
@@ -174,6 +176,11 @@ class PluginCatalogActivity final : public Activity {
   bool loadToken();
   void loadConfig();
   bool saveToken(const std::string& value);
+  // Enters State::ERROR with a translated message and requests a redraw.
+  void fail(StrId msg);
+  // Enters State::LOADING with the standard "Loading..." status and requests
+  // an immediate redraw, ahead of a fetch that is about to start.
+  void beginLoading();
   void checkAndConnectWifi();
   void launchWifiSelection();
   // Wi-Fi is up (or a token just arrived): open the list picker when the
@@ -192,6 +199,9 @@ class PluginCatalogActivity final : public Activity {
   // Browse url/body with the selected browse list's overrides applied.
   const std::string& activeBrowseUrl() const;
   const std::string& activeBrowseBody() const;
+  // Copies `headers` with `substituted()` applied to each value.
+  std::vector<std::pair<std::string, std::string>> substitutedHeaders(
+      const std::vector<std::pair<std::string, std::string>>& headers, const Item* item) const;
   void fetchPage(int newPage);
   void fetchXmlList();
   void activateItem(int itemIndex);  // XML list: navigate into a folder, else download
@@ -204,6 +214,10 @@ class PluginCatalogActivity final : public Activity {
   // holds), retrying once after a fresh password grant on 401/403. Returns
   // HTTP status (or -1 on transport failure).
   int browseRequestToFile(const std::string& urlTemplate, const std::string& bodyTemplate, const char* destPath);
+  // Resolves the reused TLS session (or `tmp`, on allocation failure) into a
+  // configured, connected client, or nullptr if `begin()` failed.
+  freeink::SecureHttpClient* openApiClient(freeink::SecureHttpClient& tmp, const std::string& url,
+                                           const std::vector<std::pair<std::string, std::string>>& headers);
   // Returns the HTTP status, or -1 on transport failure / truncation / cap.
   // `out` holds the body for any real status (error bodies carry OAuth codes).
   int apiRequest(const std::string& url, const std::string& method, const std::string& body,

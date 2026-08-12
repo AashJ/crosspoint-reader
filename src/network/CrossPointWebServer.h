@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ArduinoJson.h>
 #include <HalStorage.h>
 #include <NetworkUdp.h>
 #include <WebServer.h>
@@ -97,6 +98,11 @@ class CrossPointWebServer {
   void handleFileList() const;
   void handleFileListData() const;
   void handleDownload() const;
+  // Streams an already-open file to the client in 4KB chunks, feeding the
+  // watchdog per write and aborting cleanly (rather than looping past a dead
+  // connection) if a write stalls. Caller sets headers/content-length and
+  // closes the file.
+  void streamFileToClient(HalFile& file) const;
   void handleUpload(UploadState& state) const;
   void handleUploadPost(UploadState& state) const;
   void handleCreateFolder() const;
@@ -148,6 +154,9 @@ class CrossPointWebServer {
   // Settings plugin that needs device capabilities a static page can't have
   // (an outbound HTTPS relay, since the browser can't call other origins; SD
   // read/write; crypto primitives).
+  // Reads the POST body as JSON into `out`, sending the matching 400 itself
+  // on a missing/malformed body. Returns false when it already responded.
+  bool readJsonBody(JsonDocument& out) const;
   void handlePluginList() const;  // GET  /api/plugins   -> discovered plugins
   void handlePluginFile() const;  // GET  /plugin?name&file -> serve SD file
   void handleRelay();             // POST /api/relay     -> device makes an HTTP(S) call

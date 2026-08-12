@@ -600,19 +600,9 @@ bool Epub::generateCoverBmp(bool cropped) const {
   if (FsHelpers::hasJpgExtension(coverImageHref)) {
     LOG_DBG("EBP", "Generating BMP from JPG cover image (%s mode)", cropped ? "cropped" : "fit");
     const auto coverJpgTempPath = getCachePath() + "/.cover.jpg";
+    if (!extractItemToFile(coverImageHref, coverJpgTempPath)) return false;
 
     HalFile coverJpg;
-    if (!Storage.openFileForWrite("EBP", coverJpgTempPath, coverJpg)) {
-      return false;
-    }
-    const bool extracted = readItemContentsToStream(coverImageHref, coverJpg, 1024);
-    // Explicitly close() file before reopening for reading
-    coverJpg.close();
-    if (!extracted) {
-      Storage.remove(coverJpgTempPath.c_str());
-      return false;
-    }
-
     if (!Storage.openFileForRead("EBP", coverJpgTempPath, coverJpg)) {
       return false;
     }
@@ -638,19 +628,9 @@ bool Epub::generateCoverBmp(bool cropped) const {
   if (FsHelpers::hasPngExtension(coverImageHref)) {
     LOG_DBG("EBP", "Generating BMP from PNG cover image (%s mode)", cropped ? "cropped" : "fit");
     const auto coverPngTempPath = getCachePath() + "/.cover.png";
+    if (!extractItemToFile(coverImageHref, coverPngTempPath)) return false;
 
     HalFile coverPng;
-    if (!Storage.openFileForWrite("EBP", coverPngTempPath, coverPng)) {
-      return false;
-    }
-    const bool extracted = readItemContentsToStream(coverImageHref, coverPng, 1024);
-    // Explicitly close() file before reopening for reading
-    coverPng.close();
-    if (!extracted) {
-      Storage.remove(coverPngTempPath.c_str());
-      return false;
-    }
-
     if (!Storage.openFileForRead("EBP", coverPngTempPath, coverPng)) {
       return false;
     }
@@ -697,19 +677,9 @@ bool Epub::generateThumbBmp(int height) const {
   } else if (FsHelpers::hasJpgExtension(coverImageHref)) {
     LOG_DBG("EBP", "Generating thumb BMP from JPG cover image");
     const auto coverJpgTempPath = getCachePath() + "/.cover.jpg";
+    if (!extractItemToFile(coverImageHref, coverJpgTempPath)) return false;
 
     HalFile coverJpg;
-    if (!Storage.openFileForWrite("EBP", coverJpgTempPath, coverJpg)) {
-      return false;
-    }
-    const bool extracted = readItemContentsToStream(coverImageHref, coverJpg, 1024);
-    // Explicitly close() file before reopening for reading
-    coverJpg.close();
-    if (!extracted) {
-      Storage.remove(coverJpgTempPath.c_str());
-      return false;
-    }
-
     if (!Storage.openFileForRead("EBP", coverJpgTempPath, coverJpg)) {
       return false;
     }
@@ -738,19 +708,9 @@ bool Epub::generateThumbBmp(int height) const {
   } else if (FsHelpers::hasPngExtension(coverImageHref)) {
     LOG_DBG("EBP", "Generating thumb BMP from PNG cover image");
     const auto coverPngTempPath = getCachePath() + "/.cover.png";
+    if (!extractItemToFile(coverImageHref, coverPngTempPath)) return false;
 
     HalFile coverPng;
-    if (!Storage.openFileForWrite("EBP", coverPngTempPath, coverPng)) {
-      return false;
-    }
-    const bool extracted = readItemContentsToStream(coverImageHref, coverPng, 1024);
-    // Explicitly close() file before reopening for reading
-    coverPng.close();
-    if (!extracted) {
-      Storage.remove(coverPngTempPath.c_str());
-      return false;
-    }
-
     if (!Storage.openFileForRead("EBP", coverPngTempPath, coverPng)) {
       return false;
     }

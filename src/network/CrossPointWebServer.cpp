@@ -654,6 +654,30 @@ void CrossPointWebServer::handleFileListData() const {
   LOG_DBG("WEB", "Served file listing page for path: %s", currentPath.c_str());
 }
 
+void CrossPointWebServer::streamFileToClient(HalFile& file) const {
+  NetworkClient client = server->client();
+  static constexpr size_t CHUNK_SIZE = 4096;
+  uint8_t buffer[CHUNK_SIZE];
+
+  bool ok = true;
+  while (ok && file.available()) {
+    const int result = file.read(buffer, CHUNK_SIZE);
+    if (result <= 0) break;
+    const size_t bytesRead = static_cast<size_t>(result);
+    size_t totalWritten = 0;
+    while (totalWritten < bytesRead) {
+      resetTaskWatchdogIfSubscribed();
+      const size_t wrote = client.write(buffer + totalWritten, bytesRead - totalWritten);
+      if (wrote == 0) {
+        ok = false;
+        break;
+      }
+      totalWritten += wrote;
+    }
+  }
+  client.clear();
+}
+
 void CrossPointWebServer::handleDownload() const {
   if (!server->hasArg("path")) {
     server->send(400, "text/plain", "Missing path");
@@ -711,28 +735,7 @@ void CrossPointWebServer::handleDownload() const {
   server->setContentLength(file.size());
   server->sendHeader("Content-Disposition", "attachment; filename=\"" + filename + "\"");
   server->send(200, contentType.c_str(), "");
-
-  NetworkClient client = server->client();
-  const size_t chunkSize = 4096;
-  uint8_t buffer[chunkSize];
-
-  bool downloadOk = true;
-  while (downloadOk && file.available()) {
-    int result = file.read(buffer, chunkSize);
-    if (result <= 0) break;
-    size_t bytesRead = static_cast<size_t>(result);
-    size_t totalWritten = 0;
-    while (totalWritten < bytesRead) {
-      resetTaskWatchdogIfSubscribed();
-      size_t wrote = client.write(buffer + totalWritten, bytesRead - totalWritten);
-      if (wrote == 0) {
-        downloadOk = false;
-        break;
-      }
-      totalWritten += wrote;
-    }
-  }
-  client.clear();
+  streamFileToClient(file);
   file.close();
 }
 
@@ -1721,6 +1724,18 @@ const char* pluginContentType(const String& file) {
 
 }  // namespace
 
+bool CrossPointWebServer::readJsonBody(JsonDocument& out) const {
+  if (!server->hasArg("plain")) {
+    server->send(400, "application/json", "{\"error\":\"missing body\"}");
+    return false;
+  }
+  if (deserializeJson(out, server->arg("plain")) != DeserializationError::Ok) {
+    server->send(400, "application/json", "{\"error\":\"bad json\"}");
+    return false;
+  }
+  return true;
+}
+
 // GET /api/plugins -> [{ "name", "title", "mount" }, ...]. Only plugins with a
 // plugin.js are listed (the page loads it); optional manifest.json supplies the
 // title and mount point.
@@ -1772,20 +1787,7 @@ void CrossPointWebServer::handlePluginFile() const {
 
   server->setContentLength(f.size());
   server->send(200, pluginContentType(file), "");
-  NetworkClient client = server->client();
-  uint8_t buffer[2048];
-  while (f.available()) {
-    const int n = f.read(buffer, sizeof(buffer));
-    if (n <= 0) break;
-    size_t off = 0;
-    while (off < static_cast<size_t>(n)) {
-      resetTaskWatchdogIfSubscribed();
-      const size_t w = client.write(buffer + off, static_cast<size_t>(n) - off);
-      if (w == 0) break;
-      off += w;
-    }
-  }
-  client.clear();
+  streamFileToClient(f);
   f.close();
 }
 
@@ -1793,15 +1795,8 @@ void CrossPointWebServer::handlePluginFile() const {
 // Lets a plugin make an outbound HTTP(S) call the browser can't (CORS): the
 // device makes it via SecureNet.
 void CrossPointWebServer::handleRelay() {
-  if (!server->hasArg("plain")) {
-    server->send(400, "application/json", "{\"error\":\"missing body\"}");
-    return;
-  }
   JsonDocument req;
-  if (deserializeJson(req, server->arg("plain")) != DeserializationError::Ok) {
-    server->send(400, "application/json", "{\"error\":\"bad json\"}");
-    return;
-  }
+  if (!readJsonBody(req)) return;
   const String plugin = req["plugin"] | "";
   const std::string url = req["url"] | "";
   const std::string method = req["method"] | "GET";
@@ -1999,15 +1994,8 @@ bool safeWritePath(const std::string& p) { return p.size() > 1 && p[0] == '/' &&
 // Stateless; keys are base64 in the request/reply.
 void CrossPointWebServer::handleCrypto() {
   using namespace freeink::content;
-  if (!server->hasArg("plain")) {
-    server->send(400, "application/json", "{\"error\":\"missing body\"}");
-    return;
-  }
   JsonDocument req;
-  if (deserializeJson(req, server->arg("plain")) != DeserializationError::Ok) {
-    server->send(400, "application/json", "{\"error\":\"bad json\"}");
-    return;
-  }
+  if (!readJsonBody(req)) return;
   const std::string op = req["op"] | "";
   auto dec = [&](const char* field) -> std::string {
     const char* v = req[field].as<const char*>();
@@ -2153,15 +2141,8 @@ void CrossPointWebServer::handleCrypto() {
 // Device downloads a URL straight to SD, so a large body never passes through
 // the browser.
 void CrossPointWebServer::handleFetch() {
-  if (!server->hasArg("plain")) {
-    server->send(400, "application/json", "{\"error\":\"missing body\"}");
-    return;
-  }
   JsonDocument req;
-  if (deserializeJson(req, server->arg("plain")) != DeserializationError::Ok) {
-    server->send(400, "application/json", "{\"error\":\"bad json\"}");
-    return;
-  }
+  if (!readJsonBody(req)) return;
   const std::string url = req["url"] | "";
   const std::string dest = req["dest"] | "";
   const size_t requestedOffset = req["offset"] | 0;
@@ -2469,15 +2450,8 @@ CrossPointWebServer::PluginJob* CrossPointWebServer::allocPluginJob() {
 
 // POST /api/plugin-jobs {plugin, action, args?} -> {id}
 void CrossPointWebServer::handlePluginJobSubmit() {
-  if (!server->hasArg("plain")) {
-    server->send(400, "application/json", "{\"error\":\"missing body\"}");
-    return;
-  }
   JsonDocument req;
-  if (deserializeJson(req, server->arg("plain")) != DeserializationError::Ok) {
-    server->send(400, "application/json", "{\"error\":\"bad json\"}");
-    return;
-  }
+  if (!readJsonBody(req)) return;
   const String plugin = req["plugin"] | "";
   const String action = req["action"] | "";
   std::string args;
@@ -2523,15 +2497,8 @@ void CrossPointWebServer::handlePluginJobClaim() {
 
 // POST /api/plugin-jobs/complete {id, ok, result?} -> {ok}
 void CrossPointWebServer::handlePluginJobComplete() {
-  if (!server->hasArg("plain")) {
-    server->send(400, "application/json", "{\"error\":\"missing body\"}");
-    return;
-  }
   JsonDocument req;
-  if (deserializeJson(req, server->arg("plain")) != DeserializationError::Ok) {
-    server->send(400, "application/json", "{\"error\":\"bad json\"}");
-    return;
-  }
+  if (!readJsonBody(req)) return;
   const uint32_t id = req["id"] | 0;
   for (auto& job : pluginJobs) {
     if (job.id != id || job.state != JOB_RUNNING) continue;

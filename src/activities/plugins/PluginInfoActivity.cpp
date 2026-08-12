@@ -73,6 +73,7 @@ void PluginInfoActivity::loadParagraphs() {
   raw.resize(size);
   if (file.read(raw.data(), size) != static_cast<int>(size)) return;
 
+  paragraphs.reserve(paragraphs.size() + raw.size() / 40);  // rough average line length
   size_t pos = 0;
   while (pos <= raw.size()) {
     size_t nl = raw.find('\n', pos);
@@ -91,6 +92,7 @@ void PluginInfoActivity::ensureWrapped() {
   if (wrappedWidth == wrapWidth) return;  // already wrapped for this width
   wrappedWidth = wrapWidth;
   lines.clear();
+  lines.reserve(paragraphs.size() * 2);  // rough average wrapped lines per paragraph
   for (const std::string& raw : paragraphs) {
     std::string text = stripMarkdown(raw);
     if (text.empty()) {
