@@ -11,10 +11,6 @@
 
 #include "HalGPIO.h"
 
-#if FREEINK_DEVICE_PAPERS3
-#include <BoardPaperS3.h>
-#endif
-
 HalPowerManager powerManager;  // Singleton instance
 
 void HalPowerManager::begin() {
@@ -89,17 +85,6 @@ void HalPowerManager::startDeepSleep(HalGPIO& gpio) const {
   // deep-sleep command while its rail is still up (enterDeepSleep() in main.cpp
   // guarantees that ordering).
   freeink::PowerManager::powerDownRailsForSleep();
-
-#if FREEINK_DEVICE_PAPERS3
-  // The PaperS3's only button feeds the PMS150G power-latch chip, not an ESP
-  // GPIO, so normal deep sleep would have no wake source. Pulse the latch off
-  // instead; a side-button click then restarts through a cold boot. (Mirrors
-  // the Paper Mono PMIC shutdown.) On USB power the latch may not drop the
-  // rail — fall through to deep sleep as the fallback; the click's hardware
-  // reset still serves as the wake.
-  BoardPaperS3::powerOff();
-  delay(1000);
-#endif
 
   // Waits for the power button to be physically released (so holding it doesn't
   // immediately wake the device again), then arms the wake source and sleeps.
