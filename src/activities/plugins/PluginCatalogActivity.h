@@ -89,6 +89,14 @@ class PluginCatalogActivity final : public UiListActivity {
       std::string title, url, body;
     };
     std::vector<BrowseList> browseLists;
+    // Optional server-side search. When a search url or body is set, the
+    // browsing header gains a search action; the entered text substitutes
+    // {query} (URL-encoded, for a GET url) or {query_raw} (verbatim, for a JSON
+    // body) into these templates. Either may be empty to reuse the browse
+    // url/body (e.g. an endpoint that searches via a body field only). Results
+    // share the browse item shape. JSON lists only.
+    std::string searchUrl, searchBody;
+    bool hasSearch() const { return (!searchUrl.empty() || !searchBody.empty()) && browseFormat != "xml"; }
     // XML list options:
     std::string xmlItem;                     // local-name of the repeating element (required)
     std::string xmlContainer;                // local-name whose presence marks a navigable folder
@@ -154,6 +162,10 @@ class PluginCatalogActivity final : public UiListActivity {
   int page = 1;
   bool hasMore = false;
   int currentList = -1;  // index into manifest.browseLists; -1 = none/default
+  // Active server-side search: the raw query text and a flag that swaps the
+  // browse url/body for the search templates. Cleared on Back out of results.
+  std::string searchQuery;
+  bool searchActive = false;
   // One TLS session reused across browse requests (setReuse): repeated
   // handshakes permanently fragment the heap. Freed on exit; a request falls
   // back to a stack client when the allocation failed.
@@ -164,7 +176,10 @@ class PluginCatalogActivity final : public UiListActivity {
   std::string errorMessage;
   std::string statusMessage;
   size_t downloadProgress = 0;
-  size_t downloadTotal = 0;
+  bool cancelDownload = false;
+  // Set when the download callback consumes the home gesture; once the
+  // transfer abort unwinds, leave the catalog instead of returning to it.
+  bool goHomeAfterCancel = false;
   // Device-code sign-in state
   std::string authUserCode, authVerifyUrl, authDeviceCode;
   unsigned long authIntervalMs = 5000;
@@ -188,6 +203,16 @@ class PluginCatalogActivity final : public UiListActivity {
   // Wi-Fi is up (or a token just arrived): open the list picker when the
   // manifest defines browse lists, else fetch the first page directly.
   void startBrowse();
+  // Server-side search (manifest.hasSearch()): prompt for a query on the
+  // keyboard, then run it via the search templates.
+  static void onSearchEvent(const freeink::ui::ActionEvent& event, void* user);
+  static void onCancelEvent(const freeink::ui::ActionEvent& event, void* user);
+  void launchSearch();
+  void performSearch(const std::string& query);
+  void pumpDownloadInput();
+  void finishCancelledDownload();
+  // Header label for the browsing screen (list title / search / page suffix).
+  std::string browsingHeaderLabel() const;
   // Synthetic pager rows, mirroring the OPDS browser: "Previous page" ahead
   // of the items past page 1, "Next page" after them while more pages exist.
   bool prevRowVisible() const;
@@ -202,7 +227,6 @@ class PluginCatalogActivity final : public UiListActivity {
   void buildScreen(UiScreen& screen) override;
   bool handleCustomInput() override;
   void onBackButton() override;
-  void drawChrome() override;
   void drawFooter() override;
   void rebuildRowItems();
   // Items (and the interaction table indexing them) are about to be replaced:

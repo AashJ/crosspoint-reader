@@ -29,10 +29,17 @@ struct CatalogLine {
 // (error screens, completion notices, sign-in hints).
 void catalogCenteredBlock(UiAppHost::UiScreen& screen, std::initializer_list<CatalogLine> lines);
 
-// Centered download screen: heading, item title, progress bar (only once the
-// total is known) and, when cancelAction is a real action, a Cancel button.
+enum class CatalogDownloadProgressStyle {
+  Automatic,
+  TransferredBytes,
+};
+
+// Centered download screen: heading, item title, download progress and, when
+// cancelAction is a real action, a Cancel button. Automatic uses a progress bar
+// when the total is known; TransferredBytes always shows the byte count.
 void catalogDownloadScreen(UiAppHost::UiScreen& screen, const char* status, size_t progress, size_t total,
-                           freeink::ui::ActionId cancelAction = freeink::ui::NO_ACTION);
+                           freeink::ui::ActionId cancelAction = freeink::ui::NO_ACTION,
+                           CatalogDownloadProgressStyle progressStyle = CatalogDownloadProgressStyle::Automatic);
 
 // List body with the shared viewport protocol: on non-touch hardware keep the
 // denser per-theme row height (see UiListActivity::syncListViewport), sync

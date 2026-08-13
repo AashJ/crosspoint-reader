@@ -156,8 +156,13 @@ void OpdsBookBrowserActivity::loop() {
       activateSelected();
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       navigateBack();
-    } else if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-      if (!searchTemplate.empty() && selectorIndex == 0) launchSearch();
+    } else if (!searchTemplate.empty() && selectorIndex == 0 &&
+               mappedInput.wasReleased(MappedInputManager::Button::NavPrevious)) {
+      // The header search icon is reachable by buttons: on the top row, where
+      // previous-nav is a no-op, an Up press launches search. Return so the
+      // same press does not also fall through to list navigation below.
+      launchSearch();
+      return;
     }
 
     // Touch goes through the FreeInkApp: render() registered every tap target

@@ -331,8 +331,15 @@ void setup() {
     case HalGPIO::WakeupReason::AfterUSBPower:
       // If USB power caused a cold boot, go back to sleep
       LOG_DBG("MAIN", "Wakeup reason: After USB Power");
+#if FREEINK_DEVICE_PAPERS3
+      // Every PaperS3 boot is a cold boot (the button is behind the PMS150G
+      // latch, so there is no armable GPIO wake): sleeping here would power the
+      // device straight back off and strand it in a USB-replug boot loop.
+      break;
+#else
       powerManager.startDeepSleep(gpio);
       break;
+#endif
     case HalGPIO::WakeupReason::AfterFlash:
       // After flashing, just proceed to boot
     case HalGPIO::WakeupReason::Other:

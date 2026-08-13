@@ -40,6 +40,9 @@ class PluginListActivity final : public UiListActivity {
 
   int listCount() const override { return static_cast<int>(rowItems.size()); }
   void buildScreen(UiScreen& screen) override;
+  // The header is drawn inside buildScreen (catalogScreenHeader), so suppress
+  // the base GUI.drawHeader to avoid a second, mismatched header band.
+  void drawChrome() override {}
   void activateIndex(int index) override;
   const char* headerTitle() const override { return tr(STR_PLUGINS); }
   bool handleCustomInput() override { return subscreenOpen; }

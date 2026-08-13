@@ -5,6 +5,7 @@
 
 #include "MappedInputManager.h"
 #include "PluginInfoActivity.h"
+#include "components/CatalogScreens.h"
 #include "components/UITheme.h"
 
 namespace fui = freeink::ui;
@@ -42,8 +43,18 @@ void PluginListActivity::activateIndex(const int index) {
   if (pi < 0 || pi >= static_cast<int>(plugins.size())) return;
   nav.selected = index;
   subscreenOpen = true;
-  startActivityForResult(std::make_unique<PluginInfoActivity>(renderer, mappedInput, plugins[pi]),
-                         [this](const ActivityResult&) { subscreenOpen = false; });
+  const PluginRef& plugin = plugins[pi];
+  // A catalog plugin opens its on-device browser directly (Confirm or a tap).
+  // Browser-only plugins have no catalog, so fall back to the info screen whose
+  // README explains how to run them from the web interface.
+  if (plugin.hasCatalog) {
+    startActivityForResult(
+        std::make_unique<PluginCatalogActivity>(renderer, mappedInput, plugin.manifestPath, plugin.title),
+        [this](const ActivityResult&) { subscreenOpen = false; });
+  } else {
+    startActivityForResult(std::make_unique<PluginInfoActivity>(renderer, mappedInput, plugin),
+                           [this](const ActivityResult&) { subscreenOpen = false; });
+  }
 }
 
 bool PluginListActivity::handleButtons() {
@@ -70,11 +81,9 @@ void PluginListActivity::onBackButton() {
 }
 
 void PluginListActivity::buildScreen(UiScreen& screen) {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  // Content below the GUI.drawHeader band, above the button hints.
-  screen.setContentMargin(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
-                                      static_cast<int16_t>(metrics.buttonHintsHeight), 0});
-  screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
+  // Same fui header the plugin catalogs use, so the header stays identical when
+  // opening a plugin from this list (see drawChrome below).
+  catalogScreenHeader(screen, renderer, headerTitle());
 
   if (rowItems.empty()) {
     screen.centeredText(tr(STR_NO_PLUGINS_INSTALLED), screen.theme().bodyText);
@@ -86,6 +95,11 @@ void PluginListActivity::buildScreen(UiScreen& screen) {
   props.count = static_cast<uint16_t>(rowItems.size());
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
+  // Let a long plugin description wrap onto a second line under the title; the
+  // row grows to fit it. maxLines=2 also marks the style caller-owned (an
+  // all-default smallText fails textStyleUnset and the list would resubstitute).
+  props.subtitleText = screen.theme().smallText;
+  props.subtitleText.maxLines = 2;
   syncListViewport(screen, props, /*hasSubtitle=*/true);
   screen.list(props);
 }
