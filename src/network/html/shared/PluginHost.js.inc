@@ -13,6 +13,7 @@
     _actions: {},
     _actionBusy: false,
     _actionTimer: null,
+    _pendingCompletion: null,
     registerAction(pluginName, action, fn) {
       (this._actions[pluginName] = this._actions[pluginName] || {})[action] = fn;
       if (!this._actionTimer) this._actionTimer = setInterval(() => this._pollJobs(), 2500);
@@ -21,6 +22,12 @@
       if (this._actionBusy) return;
       this._actionBusy = true;
       try {
+        if (this._pendingCompletion) {
+          try {
+            await this._post('/api/plugin-jobs/complete', this._pendingCompletion);
+            this._pendingCompletion = null;
+          } catch (e) { return; }
+        }
         for (const plugin of Object.keys(this._actions)) {
           let job;
           try { job = await (await fetch('/api/plugin-jobs/claim?plugin=' + encodeURIComponent(plugin))).json(); }
@@ -35,7 +42,11 @@
             try { result = (await fn(job.args || {})) || {}; ok = true; }
             catch (e) { result = { error: String((e && e.message) || e) }; }
           }
-          try { await this._post('/api/plugin-jobs/complete', { id: job.id, ok, result }); } catch (e) {}
+          this._pendingCompletion = { id: job.id, ok, result };
+          try {
+            await this._post('/api/plugin-jobs/complete', this._pendingCompletion);
+            this._pendingCompletion = null;
+          } catch (e) { return; }
         }
       } finally {
         this._actionBusy = false;

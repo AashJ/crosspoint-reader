@@ -185,6 +185,7 @@ class CrossPointWebServer {
   static constexpr uint8_t JOB_DONE = 3;
   static constexpr uint8_t JOB_ERROR = 4;
   static constexpr size_t MAX_PLUGIN_JOBS = 6;
+  static constexpr uint32_t PLUGIN_JOB_LEASE_MS = 10UL * 60 * 1000;
   PluginJob pluginJobs[MAX_PLUGIN_JOBS];
   uint32_t nextPluginJobId = 1;
   PluginJob* allocPluginJob();

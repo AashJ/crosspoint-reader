@@ -2444,9 +2444,7 @@ CrossPointWebServer::PluginJob* CrossPointWebServer::allocPluginJob() {
   for (auto& job : pluginJobs) {
     if (job.state == JOB_EMPTY) return &job;
     const bool finished = job.state == JOB_DONE || job.state == JOB_ERROR;
-    // A runner that died mid-job must not pin its slot forever.
-    const bool stale = job.state == JOB_RUNNING && millis() - job.updatedAt > 10UL * 60 * 1000;
-    if ((finished || stale) && (!best || job.updatedAt < best->updatedAt)) best = &job;
+    if (finished && (!best || job.updatedAt < best->updatedAt)) best = &job;
   }
   return best;
 }
@@ -2493,10 +2491,16 @@ void CrossPointWebServer::handlePluginJobSubmit() {
 // GET /api/plugin-jobs/claim?plugin=<name> -> {id, action, args} or {id:0}
 void CrossPointWebServer::handlePluginJobClaim() {
   const String plugin = server->arg("plugin");
+  const uint32_t now = millis();
   for (auto& job : pluginJobs) {
+    if (job.state == JOB_RUNNING && now - job.updatedAt > PLUGIN_JOB_LEASE_MS) {
+      job.state = JOB_PENDING;
+      job.updatedAt = now;
+      LOG_INF("WEB", "Plugin job %u lease expired; requeued", (unsigned)job.id);
+    }
     if (job.state != JOB_PENDING || plugin != job.plugin) continue;
     job.state = JOB_RUNNING;
-    job.updatedAt = millis();
+    job.updatedAt = now;
     char msg[288];
     snprintf(msg, sizeof(msg), "{\"id\":%u,\"action\":\"%s\",\"args\":%s}", (unsigned)job.id, job.action,
              job.args[0] ? job.args : "{}");
@@ -2512,7 +2516,12 @@ void CrossPointWebServer::handlePluginJobComplete() {
   if (!readJsonBody(req)) return;
   const uint32_t id = req["id"] | 0;
   for (auto& job : pluginJobs) {
-    if (job.id != id || job.state != JOB_RUNNING) continue;
+    if (job.id != id) continue;
+    if (job.state == JOB_DONE || job.state == JOB_ERROR) {
+      server->send(200, "application/json", "{\"ok\":true}");
+      return;
+    }
+    if (job.state != JOB_RUNNING) break;
     job.state = (req["ok"] | false) ? JOB_DONE : JOB_ERROR;
     job.updatedAt = millis();
     std::string result;
