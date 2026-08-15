@@ -620,10 +620,10 @@ void SleepActivity::renderBitmapSleepScreen(const Bitmap& bitmap, const bool pre
                                                           CrossPointSettings::SLEEP_SCREEN_COVER_FILTER::NO_FILTER);
 
 #if FREEINK_DRIVER_SSD1677
-  const bool useFactoryGrayscale = hasGreyscale;
-  constexpr auto msbMode = GfxRenderer::FACTORY_GRAY_MSB;
-  constexpr auto lsbMode = GfxRenderer::FACTORY_GRAY_LSB;
-  constexpr const unsigned char* lut = freeink::lut_factory_quality;
+  const bool useFactoryGrayscale = hasGreyscale && display.supportsFactoryGrayscale();
+  const auto msbMode = useFactoryGrayscale ? GfxRenderer::FACTORY_GRAY_MSB : GfxRenderer::GRAYSCALE_MSB;
+  const auto lsbMode = useFactoryGrayscale ? GfxRenderer::FACTORY_GRAY_LSB : GfxRenderer::GRAYSCALE_LSB;
+  const unsigned char* lut = useFactoryGrayscale ? freeink::lut_factory_quality : nullptr;
 #else
   constexpr bool useFactoryGrayscale = false;
   constexpr auto msbMode = GfxRenderer::GRAYSCALE_MSB;

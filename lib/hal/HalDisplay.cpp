@@ -145,6 +145,8 @@ void HalDisplay::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* rows, ui
 
 bool HalDisplay::supportsStripGrayscale() const { return einkDisplay.supportsStripGrayscale(); }
 
+bool HalDisplay::supportsFactoryGrayscale() const { return einkDisplay.supportsFactoryGrayscale(); }
+
 uint16_t HalDisplay::getDisplayWidth() const { return einkDisplay.getDisplayWidth(); }
 
 uint16_t HalDisplay::getDisplayHeight() const { return einkDisplay.getDisplayHeight(); }
