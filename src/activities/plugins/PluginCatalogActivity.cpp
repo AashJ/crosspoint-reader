@@ -427,6 +427,8 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.authorPath = browse["fields"]["author"] | "";
   manifest.idPath = browse["fields"]["id"] | "";
   manifest.urlPath = browse["fields"]["url"] | "";
+  manifest.versionPath = browse["fields"]["version"] | "";
+  manifest.installedRoot = browse["installed_root"] | "";
   manifest.pageSize = browse["page_size"] | 8;
   // Documented bounds: each row costs an Item (strings) and a screen slot.
   manifest.pageSize = std::min(std::max(manifest.pageSize, 1), 16);
@@ -920,6 +922,7 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
   addFieldFilter(filter, manifest.itemsPath, manifest.authorPath);
   addFieldFilter(filter, manifest.itemsPath, manifest.idPath);
   addFieldFilter(filter, manifest.itemsPath, manifest.urlPath);
+  addFieldFilter(filter, manifest.itemsPath, manifest.versionPath);
   addFieldFilter(filter, manifest.itemsPath, manifest.bundleBasePath);
   addFieldFilter(filter, manifest.itemsPath, manifest.bundleFilesPath);
 
@@ -964,6 +967,7 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
       item.author = variantToString(resolvePath(v, manifest.authorPath));
       item.id = variantToString(resolvePath(v, manifest.idPath));
       item.url = variantToString(resolvePath(v, manifest.urlPath));
+      if (manifest.tracksInstalls()) item.version = variantToString(resolvePath(v, manifest.versionPath));
       if (manifest.isBundle()) {
         item.base = variantToString(resolvePath(v, manifest.bundleBasePath));
         JsonArrayConst fileArr = resolvePath(v, manifest.bundleFilesPath).as<JsonArrayConst>();
@@ -979,9 +983,42 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
   }
   hasMore = static_cast<int>(items.size()) > manifest.pageSize;
   if (hasMore) items.resize(manifest.pageSize);
+  computeInstallStatus();
   nav.reset();
   state = State::BROWSING;
   requestUpdate();
+}
+
+// Badge each item by comparing its catalog version to the installed copy's
+// ("<installedRoot>/<id>/manifest.json"). Any string mismatch is an update,
+// mirroring the browser store and the font downloader. Runs once per page.
+void PluginCatalogActivity::computeInstallStatus() {
+  if (!manifest.tracksInstalls()) return;
+  JsonDocument filter;
+  filter["version"] = true;
+  for (auto& item : items) {
+    item.status.clear();
+    if (item.id.empty()) continue;
+    const std::string manifestPath = manifest.installedRoot + "/" + item.id + "/manifest.json";
+    std::string raw;
+    if (!Storage.readFileToString("PCAT", manifestPath, MAX_MANIFEST_SIZE, raw)) {
+      // Not installed: show the available version so the row is not blank.
+      if (!item.version.empty()) item.status = "v" + item.version;
+      continue;
+    }
+    JsonDocument doc;
+    std::string installed;
+    if (deserializeJson(doc, raw, DeserializationOption::Filter(filter)) == DeserializationError::Ok) {
+      installed = doc["version"] | "";
+    }
+    // A mismatch (including an installed copy with no version recorded) means
+    // the catalog carries a different build; offer the update.
+    if (!item.version.empty() && installed != item.version) {
+      item.status = tr(STR_PLUGIN_UPDATE);
+    } else {
+      item.status = tr(STR_PLUGIN_INSTALLED);
+    }
+  }
 }
 
 void PluginCatalogActivity::beginAuth() {
@@ -1604,6 +1641,10 @@ void PluginCatalogActivity::rebuildRowItems() {
     item.label = entry.title.c_str();
     if (!entry.author.empty()) item.subtitle = entry.author.c_str();
     if (entry.isDir) item.value = ">";
+    // Install/update badge (plugin-store style catalogs); folders never carry
+    // one, so it can't collide with the chevron.
+    else if (!entry.status.empty())
+      item.value = entry.status.c_str();
     item.actionValue = static_cast<int16_t>(rowItems.size());
     rowItems.push_back(item);
   }

@@ -87,6 +87,13 @@ class PluginCatalogActivity final : public UiListActivity {
     std::string itemsPath;  // JSON: dotted path to the item array; "" = response root
     // JSON field paths (dotted); XML field selectors ("elem", "elem@attr", "@attr").
     std::string titlePath, authorPath, idPath, urlPath;
+    // Optional catalog-of-plugins support: a version field on each item plus
+    // the SD root where installed copies live ("<root>/<id>/manifest.json").
+    // When both are set, each row shows an install/update badge comparing the
+    // catalog version to the installed manifest's. Generic: the plugin store
+    // is just a catalog whose items are installable bundles.
+    std::string versionPath, installedRoot;
+    bool tracksInstalls() const { return !versionPath.empty() && !installedRoot.empty(); }
     int pageSize = 8;
     // Optional named sub-catalogs ("lists"): each entry may override the
     // browse url/body, so one service exposes several server-side views
@@ -146,7 +153,9 @@ class PluginCatalogActivity final : public UiListActivity {
 
   struct Item {
     std::string title, author, id, url;
-    bool isDir = false;  // a container/folder (navigable), not a downloadable file
+    std::string version;  // catalog version (tracksInstalls only)
+    std::string status;   // computed install/update badge shown in the row value
+    bool isDir = false;   // a container/folder (navigable), not a downloadable file
     // Bundle download only: base URL + relative file paths for this item.
     std::string base;
     std::vector<std::string> files;
@@ -261,6 +270,10 @@ class PluginCatalogActivity final : public UiListActivity {
   std::vector<std::pair<std::string, std::string>> substitutedHeaders(
       const std::vector<std::pair<std::string, std::string>>& headers, const Item* item) const;
   void fetchPage(int newPage);
+  // Fills each item's install/update badge from its installed manifest, once
+  // per page load (SD reads stay off the render path). No-op unless the
+  // manifest tracksInstalls().
+  void computeInstallStatus();
   void fetchXmlList();
   void activateItem(int itemIndex);  // XML list: navigate into a folder, else download
   void downloadItem(const Item& item);
