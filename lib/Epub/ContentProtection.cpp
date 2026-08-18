@@ -12,10 +12,10 @@
 #include <HalStorage.h>
 #include <Memory.h>
 #include <ProtectedBook.h>
+#include <TrustedTime.h>
 #include <WolfsslCrypto.h>
 #include <Zip.h>
 #include <esp_heap_caps.h>
-#include <time.h>
 
 namespace freeink {
 namespace content {
@@ -131,10 +131,22 @@ std::unique_ptr<ContentDecryptor> openProtectedBook(const std::string& epubPath,
   // this read path; let the reader open it normally.
   if (!book->isProtected()) return nullptr;
 
-  const int64_t now = static_cast<int64_t>(time(nullptr));
-  if (book->isExpired(now)) {
-    err = "access expired";
-    return nullptr;
+  // Loan enforcement. The clock is a persisted monotonic floor (TrustedTime):
+  // it can lag real time while the device sat powered off, but can never be
+  // rolled back — staying offline delays the due date at most by the
+  // powered-off gap, it does not suspend it. A book carrying a due date with
+  // no trustworthy clock at all fails closed rather than open.
+  // Exact err strings below are matched by the reader for the user message.
+  if (book->expiresAt() != 0) {
+    const int64_t now = trustedtime::trustedNow();
+    if (now == 0) {
+      err = "loan date unverified";
+      return nullptr;
+    }
+    if (book->isExpired(now)) {
+      err = "access expired";
+      return nullptr;
+    }
   }
 
   auto decryptor = makeUniqueNoThrow<ProtectedBookDecryptor>(epubPath, std::move(book));

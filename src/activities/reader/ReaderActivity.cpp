@@ -61,7 +61,7 @@ void ReaderActivity::onEnter() {
   applyInitialOrientation();
 
   if (!loadBook()) {
-    finish();
+    if (!handleLoadFailure()) finish();
     return;
   }
 

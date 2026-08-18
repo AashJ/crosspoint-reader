@@ -365,3 +365,21 @@ browser-side.
 | Create / delete / move SD files | same-origin `/mkdir`, `/delete`, `/move` |
 | On-device catalog/browse/download | `device.json` (this document) |
 | External app triggers an action | `api.registerAction(name, fn)` + `/api/plugin-jobs` |
+
+## Protected content and loan expiry
+
+Books whose entries are content-protected open through the read path in
+`lib/Epub/ContentProtection.cpp`: the access credential lives at
+`/.crosspoint/content.key`, and an out-of-band rights document may sit next to
+the book as `<book>.epub.rights` (falling back to a rights file inside the
+zip). Entries decrypt on demand, streamed in small chunks; nothing decrypted
+is ever written to SD.
+
+When the rights carry a due date, the reader enforces it against
+`lib/TrustedTime`: a monotonic clock floor persisted in NVS (on-flash, not on
+the removable card), restored into the system clock at boot, advanced at
+every sleep entry and snapped to real time by SNTP on every Wi-Fi join. The
+floor can lag real time while the device sits powered off, but it can never
+be rolled back — staying offline delays a due date at most by the powered-off
+gap, it does not suspend it. A book with a due date and no trustworthy clock
+at all refuses to open and asks for one Wi-Fi connection.
