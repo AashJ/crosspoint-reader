@@ -13,6 +13,7 @@
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/ConfirmationActivity.h"
+#include "components/CatalogScreens.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
@@ -35,9 +36,17 @@ void FontDownloadActivity::activateIndex(const int index) {
 
 void FontDownloadActivity::onEnter() {
   UiListActivity::onEnter();
+  app.on(ACTION_CANCEL, &FontDownloadActivity::onCancelEvent, this);
   WiFi.mode(WIFI_STA);
   startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
+}
+
+void FontDownloadActivity::onCancelEvent(const fui::ActionEvent&, void* user) {
+  auto* self = static_cast<FontDownloadActivity*>(user);
+  if (self->state_ != DOWNLOADING) return;
+  self->app.clearTapFlash();
+  self->cancelRequested_ = true;
 }
 
 void FontDownloadActivity::onExit() {
@@ -327,6 +336,7 @@ void FontDownloadActivity::downloadFamily(ManifestFamily& family) {
             cancelRequested_ = true;
             goHomeRequested_ = true;
           }
+          routeTouch(mappedInput);
           requestUpdate(true);
         },
         &cancelRequested_);
@@ -490,6 +500,15 @@ void FontDownloadActivity::buildScreen(UiScreen& screen) {
                                       static_cast<int16_t>(metrics.buttonHintsHeight), 0});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
+  if (state_ == DOWNLOADING) {
+    const auto& family = families_[downloadingFamilyIndex_];
+    char status[96];
+    snprintf(status, sizeof(status), "%s (%u/%u)", family.name.c_str(), static_cast<unsigned>(currentFileIndex_ + 1),
+             static_cast<unsigned>(currentFileTotal_));
+    catalogDownloadScreen(screen, status, fileProgress_, fileTotal_, ACTION_CANCEL);
+    return;
+  }
+
   if (families_.empty()) {
     screen.centeredText(tr(STR_NO_FONTS_AVAILABLE), screen.theme().bodyText);
     return;
@@ -647,23 +666,7 @@ void FontDownloadActivity::render(RenderLock&&) {
                                               families_.empty() ? "" : tr(STR_DIR_DOWN));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state_ == DOWNLOADING) {
-    const auto& family = families_[downloadingFamilyIndex_];
-
-    std::string statusText = std::string(tr(STR_DOWNLOADING)) + " " + family.name + " (" +
-                             std::to_string(currentFileIndex_ + 1) + "/" + std::to_string(currentFileTotal_) + ")";
-    renderer.drawCenteredText(UI_10_FONT_ID, centerY - lineHeight, statusText.c_str());
-
-    float progress = 0;
-    if (fileTotal_ > 0) {
-      progress = static_cast<float>(fileProgress_) / static_cast<float>(fileTotal_);
-    }
-
-    int barY = centerY + metrics.verticalSpacing;
-    GUI.drawProgressBar(
-        renderer,
-        Rect{metrics.contentSidePadding, barY, pageWidth - metrics.contentSidePadding * 2, metrics.progressBarHeight},
-        static_cast<int>(progress * 100), 100);
-
+    renderUi();
     const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   } else if (state_ == COMPLETE) {

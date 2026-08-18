@@ -42,6 +42,8 @@ class FontDownloadActivity final : public UiListActivity {
   bool skipLoopDelay() override { return true; }
 
  private:
+  static constexpr freeink::ui::ActionId ACTION_CANCEL = ACTION_USER;
+
   enum State {
     WIFI_SELECTION,
     LOADING_MANIFEST,
@@ -96,6 +98,7 @@ class FontDownloadActivity final : public UiListActivity {
   std::vector<freeink::ui::ListItem> rowItems_;
   bool rowsDirty_ = true;
   void rebuildRowItems();
+  static void onCancelEvent(const freeink::ui::ActionEvent& event, void* user);
 
   int listCount() const override { return listItemCount(); }
   void buildScreen(UiScreen& screen) override;

@@ -178,6 +178,13 @@ bool EpubReaderActivity::loadBook() {
     loaded = loadedEpub->load(true, SETTINGS.embeddedStyle == 0);
   }
   if (!loaded) {
+    if (!loadedEpub->getProtectionError().empty()) {
+      LOG_ERR("ERS", "Protected book unavailable: %s", loadedEpub->getProtectionError().c_str());
+      renderer.clearScreen();
+      GUI.drawPopup(renderer, tr(STR_DRM_PROTECTED_FILE));
+      delay(2500);
+      return false;
+    }
     LOG_ERR("ERS", "Failed to load EPUB");
     return false;
   }

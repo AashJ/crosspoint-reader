@@ -282,6 +282,20 @@ int BaseTheme::getListPageItems(int contentHeight, bool hasSubtitle) const {
   return std::max(1, contentHeight / rowStep);
 }
 
+ListLayout BaseTheme::getListLayout(const GfxRenderer& renderer, bool hasSubtitle) const {
+  const auto& m = UITheme::getInstance().getMetrics();
+  const int w = renderer.getScreenWidth();
+  const int listTop = m.topPadding + m.headerHeight + m.verticalSpacing;
+  const int listHeight =
+      renderer.getScreenHeight() - (m.topPadding + m.headerHeight + m.buttonHintsHeight + m.verticalSpacing * 2);
+  ListLayout l;
+  l.header = Rect{0, m.topPadding, w, m.headerHeight};
+  l.list = Rect{0, listTop, w, listHeight};
+  l.rowStep = getListRowStep(hasSubtitle);
+  l.pageItems = getListPageItems(listHeight, hasSubtitle);
+  return l;
+}
+
 void BaseTheme::drawList(const GfxRenderer& renderer, Rect rect, int itemCount, int selectedIndex,
                          const std::function<std::string(int index)>& rowTitle,
                          const std::function<std::string(int index)>& rowSubtitle,

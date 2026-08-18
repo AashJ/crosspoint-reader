@@ -3,6 +3,8 @@
 
 #include <functional>
 #include <string>
+#include <utility>
+#include <vector>
 
 /**
  * HTTP client utility for fetching content and downloading files. Built on
@@ -38,10 +40,15 @@ class HttpDownloader {
   static bool fetchUrl(const std::string& url, const DataCallback& onData, const std::string& username = "",
                        const std::string& password = "");
 
+  using Header = std::pair<std::string, std::string>;
+
   /**
-   * Download a file to the SD card with optional credentials.
+   * Download a file to the SD card with optional credentials. `headers` are
+   * added to the request (e.g. a Bearer Authorization), alongside any Basic
+   * auth derived from username/password.
    */
   static DownloadError downloadToFile(const std::string& url, const std::string& destPath,
                                       ProgressCallback progress = nullptr, bool* cancelFlag = nullptr,
-                                      const std::string& username = "", const std::string& password = "");
+                                      const std::string& username = "", const std::string& password = "",
+                                      const std::vector<Header>& headers = {});
 };
