@@ -299,29 +299,6 @@ void CrossPointWebServer::resumeTransferServices() {
           (unsigned)ESP.getMaxAllocHeap());
 }
 
-bool CrossPointWebServer::pauseWebTaskWatchdog() {
-  if (!watchdogTaskRegistered) return false;
-
-  const esp_err_t result = esp_task_wdt_delete(nullptr);
-  if (result != ESP_OK) {
-    LOG_ERR("WEB", "Failed to pause web task watchdog: %s", esp_err_to_name(result));
-    return false;
-  }
-
-  watchdogTaskRegistered = false;
-  return true;
-}
-
-void CrossPointWebServer::restoreWebTaskWatchdog(bool restore) {
-  if (!restore) return;
-
-  const esp_err_t result = esp_task_wdt_add(nullptr);
-  watchdogTaskRegistered = result == ESP_OK;
-  if (!watchdogTaskRegistered) {
-    LOG_ERR("WEB", "Failed to restore web task watchdog: %s", esp_err_to_name(result));
-  }
-}
-
 void CrossPointWebServer::abortWsUpload(const char* tag) {
   // Explicit close() required: file-scope global persists beyond function scope
   wsUploadFile.close();
@@ -1798,14 +1775,6 @@ void CrossPointWebServer::handleRelay() {
     return;
   }
 
-  // The response-read callback below can feed the watchdog while polling, but
-  // SecureHttpClient cannot invoke it while NetworkClient is blocked in
-  // connect/write/close. A socket write may retry for ten seconds, exceeding
-  // this task's five-second watchdog window. The HTTP transaction has its own
-  // bounded timeouts, so pause the task watchdog until the client is destroyed.
-  const bool restoreWatchdog = pauseWebTaskWatchdog();
-  ScopedCleanup restoreWatchdogOnExit{[this, restoreWatchdog] { restoreWebTaskWatchdog(restoreWatchdog); }};
-
   // Declare the resume guard before the TLS client so reverse destruction
   // releases every client/response allocation before rebuilding these services.
   suspendTransferServices();
@@ -2047,12 +2016,7 @@ void CrossPointWebServer::handleCrypto() {
     }
   } else if (op == "keygen") {
     RsaKeyPairDer kp;
-    // RSA prime generation can legitimately take longer than the web task's
-    // five-second watchdog window. Temporarily unsubscribe this task; request
-    // processing is synchronous, so no other handler can run concurrently.
-    const bool restore = pauseWebTaskWatchdog();
     const bool generated = c.rsaGenerate(&kp);
-    restoreWebTaskWatchdog(restore);
     if (generated) {
       resp["public"] = b64encode(kp.spki);
       resp["private"] = b64encode(kp.pkcs8);
@@ -2106,11 +2070,7 @@ void CrossPointWebServer::handleCrypto() {
       if (p12Len < 0) {
         resp["error"] = "pkcs12 failed: invalid base64";
       } else {
-        // This PKCS#12 KDF commonly runs for 50,000 rounds, exceeding the web
-        // task's normal watchdog window on the ESP32-C3.
-        const bool restore = pauseWebTaskWatchdog();
         const bool extracted = c.pkcs12Extract(p12, static_cast<size_t>(p12Len), pw, &key, &cert);
-        restoreWebTaskWatchdog(restore);
         if (extracted) {
           resp["key"] = b64encode(key);
           resp["cert"] = b64encode(cert);
@@ -2184,8 +2144,6 @@ void CrossPointWebServer::handleFetch() {
   // Range request on a fresh connection — book-delivery CDNs serve static files
   // and honor ranges. A server that ignores the Range (200 instead of 206)
   // restarts the body, so the file is rewound before its first chunk lands.
-  const bool restoreWatchdog = pauseWebTaskWatchdog();
-  ScopedCleanup restoreWatchdogOnExit{[this, restoreWatchdog] { restoreWebTaskWatchdog(restoreWatchdog); }};
   suspendTransferServices();
   ScopedCleanup resumeServices{[this] { resumeTransferServices(); }};
 

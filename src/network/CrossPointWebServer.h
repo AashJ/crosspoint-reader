@@ -200,11 +200,4 @@ class CrossPointWebServer {
   // measured with them resident during a large transfer).
   void suspendTransferServices();
   void resumeTransferServices();
-
-  // NetworkClient::write() can block for up to ten one-second select retries.
-  // Outbound plugin requests are otherwise bounded by transport/HTTP timeouts,
-  // so temporarily remove this synchronous serving task from the five-second
-  // task watchdog while one is in progress.
-  bool pauseWebTaskWatchdog();
-  void restoreWebTaskWatchdog(bool restore);
 };
