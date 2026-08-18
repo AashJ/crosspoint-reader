@@ -1326,6 +1326,10 @@ bool PluginCatalogActivity::handleCustomInput() {
     int ty = 0;
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
         mappedInput.wasReleased(MappedInputManager::Button::Back) || mappedInput.wasScreenTapped(tx, ty)) {
+      // The just-finished download may have installed/updated a plugin; refresh
+      // the install badges so the row no longer reads "Update".
+      computeInstallStatus();
+      releaseRows();
       state = State::BROWSING;
       requestUpdate();
     }
