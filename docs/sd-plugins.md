@@ -187,7 +187,8 @@ Two browse formats:
     "username": "{cfg.user}",              // optional HTTP Basic creds for the file GET
     "password": "{cfg.pass}",             // omit for token/header auth
     "dest_dir": "/ServiceName",             // created if missing; falls back to SD root
-    "filename": "{title}.epub",             // {title} is filesystem-sanitized here
+    "filename": "{title}.epub",             // rendered filename is sanitized to 100 bytes;
+                                            // a conventional extension is preserved
     "sidecar": {                            // optional per-book metadata file
       "path": "{dest}.meta.json",             // the book metadata sidecar convention (see plugin-events.md)
       "body": "{\"book_id\":{id}}"

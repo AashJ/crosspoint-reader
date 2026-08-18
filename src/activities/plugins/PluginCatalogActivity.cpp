@@ -1203,19 +1203,17 @@ void PluginCatalogActivity::downloadItem(const Item& item) {
     haveFolder = false;
   }
 
-  Item named = item;
-  named.title = StringUtils::sanitizeFilename(item.title, 60);
-  // {id}/{author}/{url} come raw from the catalog response; a hostile server
-  // could smuggle separators through them to escape destDir (the bundle
-  // branch guards its subdir the same way).
-  const std::string filename = substituted(manifest.filenameTpl, &named);
+  // Sanitize after substitution so the byte limit applies to the complete
+  // filename and does not remove an extension already present in {title}.
+  const std::string filename =
+      StringUtils::sanitizeFilenamePreservingExtension(substituted(manifest.filenameTpl, &item));
   if (filename.empty() || filename.find("..") != std::string::npos || filename.find('/') != std::string::npos) {
     LOG_ERR("PCAT", "unsafe filename rejected: %s", filename.c_str());
     fail(StrId::STR_DOWNLOAD_FAILED);
     return;
   }
   std::string dest;
-  dest.reserve(96);
+  dest.reserve((haveFolder ? manifest.destDir.size() : 0) + 1 + filename.size());
   if (haveFolder) dest += folder;
   dest += '/';
   dest += filename;
