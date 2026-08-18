@@ -41,8 +41,6 @@ class OpdsBookBrowserActivity final : public Activity, private UiAppHost {
   // hint is Fetch (a server round-trip), not Open.
   bool prevRowPresent = false;
   bool nextRowPresent = false;
-  bool consumeConfirm = false;
-  bool consumeBack = false;
   int selectorIndex = 0;
   std::string errorMessage;
   std::string statusMessage;

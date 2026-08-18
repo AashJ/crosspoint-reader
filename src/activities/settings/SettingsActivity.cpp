@@ -88,10 +88,9 @@ void SettingsActivity::rebuildSettingsLists() {
   systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
-  // TODO: Touch devices need their own firmware update path/artifacts before OTA is exposed.
-  if (!BoardConfig::hasTouch()) {
-    systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
-  }
+  // OTA fetches this board's own release asset (see OtaUpdater); boards whose
+  // asset isn't published yet just report no update available.
+  systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
   systemSettings.push_back(SettingInfo::Action(StrId::STR_PLUGINS, SettingAction::Plugins));
@@ -224,7 +223,7 @@ void SettingsActivity::stepTab(const int direction) {
 }
 
 bool SettingsActivity::handleButtons() {
-  if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (ringPos() == 0) {
       stepTab(1);
     } else {
@@ -234,7 +233,7 @@ bool SettingsActivity::handleButtons() {
     return true;
   }
 
-  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     if (ringPos() > 0) {
       activeNav().selected = 0;
       requestUpdate();
@@ -357,7 +356,14 @@ void SettingsActivity::toggleCurrentSetting() {
                                });
         break;
       case SettingAction::Language:
-        startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput), resultHandler);
+        // Row labels are translated once in rebuildRowItems() and don't
+        // re-run on Pop (see ActivityManager::loop()), so a language switch
+        // needs an explicit rebuild here rather than the generic resultHandler.
+        startActivityForResult(std::make_unique<LanguageSelectActivity>(renderer, mappedInput),
+                               [this](const ActivityResult&) {
+                                 SETTINGS.saveToFile();
+                                 rebuildSettingsLists();
+                               });
         break;
       case SettingAction::Plugins:
         startActivityForResult(std::make_unique<PluginListActivity>(renderer, mappedInput), resultHandler);
@@ -406,7 +412,7 @@ void SettingsActivity::openSleepTimeoutPicker() {
       std::make_unique<IntervalSelectionActivity>(
           renderer, mappedInput, "SleepTimeoutInterval", StrId::STR_TIME_TO_SLEEP, SETTINGS.sleepTimeoutMinutes,
           CrossPointSettings::MIN_SLEEP_TIMEOUT_MINUTES, CrossPointSettings::MAX_SLEEP_TIMEOUT_MINUTES, 1, 5,
-          StrId::STR_SLEEP_TIMER_VALUE_FORMAT, false, true, StrId::STR_SLEEP_NEVER),
+          StrId::STR_SLEEP_TIMER_VALUE_FORMAT, false, StrId::STR_SLEEP_NEVER),
       [this](const ActivityResult& result) {
         if (!result.isCancelled) {
           SETTINGS.sleepTimeoutMinutes = static_cast<uint8_t>(std::get<IntervalResult>(result.data).value);
