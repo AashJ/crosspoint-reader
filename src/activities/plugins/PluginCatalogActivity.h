@@ -87,13 +87,13 @@ class PluginCatalogActivity final : public UiListActivity {
     std::string itemsPath;  // JSON: dotted path to the item array; "" = response root
     // JSON field paths (dotted); XML field selectors ("elem", "elem@attr", "@attr").
     std::string titlePath, authorPath, idPath, urlPath;
-    // Optional catalog-of-plugins support: a version field on each item plus
-    // the SD root where installed copies live ("<root>/<id>/manifest.json").
-    // When both are set, each row shows an install/update badge comparing the
-    // catalog version to the installed manifest's. Generic: the plugin store
-    // is just a catalog whose items are installable bundles.
-    std::string versionPath, installedRoot;
-    bool tracksInstalls() const { return !versionPath.empty() && !installedRoot.empty(); }
+    // Optional catalog-of-plugins support: a version field on each item. When
+    // set, each row is badged Installed / Update by comparing the catalog
+    // version to the installed plugin's manifest (located by folder id across
+    // the plugin roots). Generic: the plugin store is just a catalog whose
+    // items are installable plugin bundles keyed by folder name.
+    std::string versionPath;
+    bool tracksInstalls() const { return !versionPath.empty(); }
     int pageSize = 8;
     // Optional named sub-catalogs ("lists"): each entry may override the
     // browse url/body, so one service exposes several server-side views

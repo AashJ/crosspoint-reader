@@ -428,7 +428,6 @@ bool PluginCatalogActivity::loadManifest() {
   manifest.idPath = browse["fields"]["id"] | "";
   manifest.urlPath = browse["fields"]["url"] | "";
   manifest.versionPath = browse["fields"]["version"] | "";
-  manifest.installedRoot = browse["installed_root"] | "";
   manifest.pageSize = browse["page_size"] | 8;
   // Documented bounds: each row costs an Item (strings) and a screen slot.
   manifest.pageSize = std::min(std::max(manifest.pageSize, 1), 16);
@@ -990,8 +989,9 @@ void PluginCatalogActivity::fetchPage(const int newPage) {
 }
 
 // Badge each item by comparing its catalog version to the installed copy's
-// ("<installedRoot>/<id>/manifest.json"). Any string mismatch is an update,
-// mirroring the browser store and the font downloader. Runs once per page.
+// manifest (located by folder id across the plugin roots). Any string
+// mismatch is an update, mirroring the browser store and the font downloader.
+// Runs once per page.
 void PluginCatalogActivity::computeInstallStatus() {
   if (!manifest.tracksInstalls()) return;
   JsonDocument filter;
@@ -999,9 +999,11 @@ void PluginCatalogActivity::computeInstallStatus() {
   for (auto& item : items) {
     item.status.clear();
     if (item.id.empty()) continue;
-    const std::string manifestPath = manifest.installedRoot + "/" + item.id + "/manifest.json";
+    // Locate the install across every plugin root (not just one), matching
+    // the discovery the rest of the firmware uses.
+    const std::string dir = PluginLocations::findPluginDir(item.id.c_str());
     std::string raw;
-    if (!Storage.readFileToString("PCAT", manifestPath, MAX_MANIFEST_SIZE, raw)) {
+    if (dir.empty() || !Storage.readFileToString("PCAT", dir + "/manifest.json", MAX_MANIFEST_SIZE, raw)) {
       // Not installed: show the available version so the row is not blank.
       if (!item.version.empty()) item.status = "v" + item.version;
       continue;
@@ -1013,11 +1015,7 @@ void PluginCatalogActivity::computeInstallStatus() {
     }
     // A mismatch (including an installed copy with no version recorded) means
     // the catalog carries a different build; offer the update.
-    if (!item.version.empty() && installed != item.version) {
-      item.status = tr(STR_PLUGIN_UPDATE);
-    } else {
-      item.status = tr(STR_PLUGIN_INSTALLED);
-    }
+    item.status = (!item.version.empty() && installed != item.version) ? tr(STR_UPDATE_AVAILABLE) : tr(STR_INSTALLED);
   }
 }
 

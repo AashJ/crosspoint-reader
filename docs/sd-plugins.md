@@ -157,12 +157,11 @@ Two browse formats:
       "author": "authors.0.name",
       "id": "id",
       "url": "download_url",                // when the item carries a direct file URL
-      "version": "version"                  // catalog-of-plugins only (see installed_root)
+      "version": "version"                  // catalog-of-plugins only: badges each row
+                                            // Installed / Update by comparing this to the
+                                            // installed plugin's manifest.json (found by id)
     },
     "page_size": 8,                         // 1..16; response should honor {limit}
-    "installed_root": "/.crosspoint/plugins", // catalog-of-plugins only: with fields.version,
-                                            // each row is badged Installed / Update by comparing
-                                            // the catalog version to <installed_root>/<id>/manifest.json
 
     "lists": [                              // optional named sub-catalogs (json only):
       { "title": "All Books" },             // a picker screen precedes browsing;
