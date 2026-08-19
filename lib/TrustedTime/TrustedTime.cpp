@@ -74,8 +74,7 @@ bool syncNow(const uint32_t timeoutMs) {
   if (esp_sntp_enabled()) esp_sntp_stop();
   configureSntp();
   const unsigned long deadline = millis() + timeoutMs;
-  while (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED &&
-         static_cast<long>(deadline - millis()) > 0) {
+  while (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED && static_cast<long>(deadline - millis()) > 0) {
     delay(100);
   }
   const bool synced = sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED;
