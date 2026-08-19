@@ -1,12 +1,12 @@
 ---
 name: heap-discipline
-description: "Memory allocation discipline for the ESP32-C3 (~380KB RAM, no PSRAM, single 48KB framebuffer). Use whenever writing or reviewing code that allocates: new / malloc / std::vector / std::string, buffers, caches, or anything held across a loop or an activity lifecycle. Covers makeUniqueNoThrow vs raw new/malloc, fragmentation avoidance, reserve-before-push_back, alloc-once-reuse, stack vs heap sizing, and the chunked grayscale buffer pattern."
+description: Memory allocation discipline for the ESP32-C3 (~380KB RAM, no PSRAM, single 48KB framebuffer). Use whenever writing or reviewing code that allocates: new / malloc / std::vector / std::string, buffers, caches, or anything held across a loop or an activity lifecycle. Covers makeUniqueNoThrow vs raw new/malloc, fragmentation avoidance, reserve-before-push_back, alloc-once-reuse, stack vs heap sizing, and the chunked grayscale buffer pattern.
 ---
 
 # Heap Discipline (ESP32-C3)
 
-CLAUDE.md states the allocation rules. This is the procedure you run while
-writing the code and the gate you run before handing it back.
+The hardware and coding rule files state the allocation rules. This is the
+procedure you run while writing the code and the gate before handoff.
 
 The constraint that makes every call matter: ~380KB RAM, no PSRAM, one 48KB
 framebuffer. **Fragmentation, not total usage, is what kills this device.**
@@ -48,7 +48,7 @@ Bare `new` / `new[]` is never correct here: under `-fno-exceptions` it calls
 
 ## Justify every allocation
 
-Per CLAUDE.md's evidence rule: when you add a heap allocation, state in one line
+Per the root evidence rule: when you add a heap allocation, state in one line
 why stack/static/reuse was rejected and the worst-case size. If you cannot name
 the size, you cannot budget it, and you should not allocate it.
 
