@@ -2366,8 +2366,8 @@ void CrossPointWebServer::handlePluginFs() {
       return;
     }
     decoded.resize((encLen * 3) / 4 + 3);
-    const int32_t dn =
-        base64Decode(rawData.c_str(), encLen, reinterpret_cast<uint8_t*>(decoded.data()), decoded.size());
+    const int32_t dn = freeink::content::base64Decode(rawData.c_str(), encLen,
+                                                      reinterpret_cast<uint8_t*>(decoded.data()), decoded.size());
     if (dn < 0) {
       server->send(400, "application/json", "{\"error\":\"bad base64\"}");
       return;
