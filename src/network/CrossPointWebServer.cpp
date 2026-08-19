@@ -627,17 +627,22 @@ void CrossPointWebServer::handleFileListData() const {
 void CrossPointWebServer::streamFileToClient(HalFile& file) const {
   NetworkClient client = server->client();
   static constexpr size_t CHUNK_SIZE = 4096;
-  uint8_t buffer[CHUNK_SIZE];
+  // Off the stack: the web-server task also runs TLS and SD from this stack.
+  auto buffer = makeUniqueNoThrow<uint8_t[]>(CHUNK_SIZE);
+  if (!buffer) {
+    LOG_ERR("WEB", "OOM: %u byte stream buffer", (unsigned)CHUNK_SIZE);
+    return;
+  }
 
   bool ok = true;
   while (ok && file.available()) {
-    const int result = file.read(buffer, CHUNK_SIZE);
+    const int result = file.read(buffer.get(), CHUNK_SIZE);
     if (result <= 0) break;
     const size_t bytesRead = static_cast<size_t>(result);
     size_t totalWritten = 0;
     while (totalWritten < bytesRead) {
       resetTaskWatchdogIfSubscribed();
-      const size_t wrote = client.write(buffer + totalWritten, bytesRead - totalWritten);
+      const size_t wrote = client.write(buffer.get() + totalWritten, bytesRead - totalWritten);
       if (wrote == 0) {
         ok = false;
         break;
@@ -1960,6 +1965,11 @@ void CrossPointWebServer::handleCrypto() {
     const char* v = req[field].as<const char*>();
     if (!v) return std::string();
     const size_t encodedLen = strlen(v);
+    // Crypto inputs (keys, certs, small payloads) are a few KB at most. Cap the
+    // field so a LAN client can't post a multi-megabyte value and abort() the
+    // device on the fallible resize below (-fno-exceptions).
+    static constexpr size_t kMaxCryptoField = 64 * 1024;
+    if (encodedLen > kMaxCryptoField) return std::string();
     std::string decoded;
     decoded.resize((encodedLen * 3) / 4 + 3);
     const int32_t decodedLen = base64Decode(v, encodedLen, reinterpret_cast<uint8_t*>(decoded.data()), decoded.size());
@@ -2016,11 +2026,11 @@ void CrossPointWebServer::handleCrypto() {
       resp["error"] = "keygen failed: " + c.lastError;
   } else if (op == "pubencrypt") {
     const std::string cert = dec("cert"), d = dec("data");
-    uint8_t out[512];
+    std::vector<uint8_t> out(512);  // off the stack; RSA output up to 4096-bit
     size_t olen = 0;
     if (c.rsaPublicEncrypt(reinterpret_cast<const uint8_t*>(cert.data()), cert.size(),
-                           reinterpret_cast<const uint8_t*>(d.data()), d.size(), out, sizeof(out), &olen))
-      resp["data"] = b64encode(out, olen);
+                           reinterpret_cast<const uint8_t*>(d.data()), d.size(), out.data(), out.size(), &olen))
+      resp["data"] = b64encode(out.data(), olen);
     else
       resp["error"] = "pubencrypt failed: " + c.lastError + " (cert " + std::to_string(cert.size()) + "B, data " +
                       std::to_string(d.size()) + "B)";
@@ -2338,6 +2348,35 @@ void CrossPointWebServer::handlePluginFs() {
     return;
   }
 
+  // Resolve the body before touching the filesystem. PluginHost sends the file
+  // base64-encoded (enc=base64) so a binary payload with NUL bytes survives the
+  // WebServer's String parsing, which otherwise truncates at the first NUL. A
+  // legacy raw body (no enc) is written verbatim.
+  const String& rawData = server->arg("plain");
+  std::string decoded;
+  const uint8_t* data = reinterpret_cast<const uint8_t*>(rawData.c_str());
+  size_t dataSize = rawData.length();
+  if (server->arg("enc") == "base64") {
+    const size_t encLen = rawData.length();
+    // Plugin files (config, token, rights, credential) are small; the cap also
+    // bounds the fallible resize below under -fno-exceptions.
+    static constexpr size_t kMaxPluginFile = 256 * 1024;
+    if (encLen > kMaxPluginFile) {
+      server->send(413, "application/json", "{\"error\":\"too large\"}");
+      return;
+    }
+    decoded.resize((encLen * 3) / 4 + 3);
+    const int32_t dn =
+        base64Decode(rawData.c_str(), encLen, reinterpret_cast<uint8_t*>(decoded.data()), decoded.size());
+    if (dn < 0) {
+      server->send(400, "application/json", "{\"error\":\"bad base64\"}");
+      return;
+    }
+    decoded.resize(static_cast<size_t>(dn));
+    data = reinterpret_cast<const uint8_t*>(decoded.data());
+    dataSize = decoded.size();
+  }
+
   // ensureDirectoryExists() creates missing parents along the way, so this
   // covers any depth under /.crosspoint/plugins/<name>/... in one call.
   const size_t lastSlash = path.rfind('/');
@@ -2349,9 +2388,6 @@ void CrossPointWebServer::handlePluginFs() {
     server->send(500, "application/json", "{\"error\":\"cannot write\"}");
     return;
   }
-  const String& rawData = server->arg("plain");
-  const auto* data = reinterpret_cast<const uint8_t*>(rawData.c_str());
-  const size_t dataSize = rawData.length();
   const size_t n = dataSize == 0 ? 0 : f.write(data, dataSize);
   f.flush();
   f.close();
@@ -2431,10 +2467,9 @@ void CrossPointWebServer::handlePluginJobClaim() {
     if (job.state != JOB_PENDING || plugin != job.plugin) continue;
     job.state = JOB_RUNNING;
     job.updatedAt = now;
-    char msg[288];
-    snprintf(msg, sizeof(msg), "{\"id\":%u,\"action\":\"%s\",\"args\":%s}", (unsigned)job.id, job.action,
-             job.args[0] ? job.args : "{}");
-    server->send(200, "application/json", msg);
+    const std::string msg = "{\"id\":" + std::to_string(job.id) + ",\"action\":\"" + job.action +
+                            "\",\"args\":" + (job.args[0] ? job.args : "{}") + "}";
+    server->send(200, "application/json", msg.c_str());
     return;
   }
   server->send(200, "application/json", "{\"id\":0}");
@@ -2471,10 +2506,9 @@ void CrossPointWebServer::handlePluginJobStatus() {
   static constexpr const char* kStateNames[] = {"empty", "pending", "running", "done", "error"};
   for (auto& job : pluginJobs) {
     if (job.id != id || job.state == JOB_EMPTY) continue;
-    char msg[288];
-    snprintf(msg, sizeof(msg), "{\"id\":%u,\"state\":\"%s\",\"result\":%s}", (unsigned)id, kStateNames[job.state],
-             job.result[0] ? job.result : "null");
-    server->send(200, "application/json", msg);
+    const std::string msg = "{\"id\":" + std::to_string(id) + ",\"state\":\"" + kStateNames[job.state] +
+                            "\",\"result\":" + (job.result[0] ? job.result : "null") + "}";
+    server->send(200, "application/json", msg.c_str());
     return;
   }
   // Unknown: never existed, or its slot was recycled after completion.

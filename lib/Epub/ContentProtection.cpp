@@ -40,6 +40,8 @@ class SdByteSource : public ByteSource {
     file_ = Storage.open(path_.c_str(), O_RDONLY);
     return file_ && file_.isOpen();
   }
+  // Open once, then reuse across reads — decrypting a book faults many entries.
+  bool ensureOpen() { return (file_ && file_.isOpen()) || open(); }
   int32_t readAt(uint64_t offset, void* dst, uint32_t len) override {
     if (!file_ || !file_.seek64(offset)) return -1;
     return file_.read(dst, len);
@@ -55,20 +57,21 @@ class SdByteSource : public ByteSource {
 class ProtectedBookDecryptor : public ContentDecryptor {
  public:
   ProtectedBookDecryptor(std::string epubPath, std::unique_ptr<ProtectedBook> book)
-      : epubPath_(std::move(epubPath)), book_(std::move(book)) {}
+      : source_(std::move(epubPath)), book_(std::move(book)) {}
 
   bool isEncrypted(const std::string& itemPath) const override { return book_->isEncrypted(itemPath); }
 
   size_t decryptedSize(const std::string& itemPath) const override { return book_->decryptedSize(itemPath); }
 
   bool decryptToSink(const std::string& itemPath, ContentChunkSink sink, void* context) override {
-    SdByteSource source(epubPath_);
-    if (!source.open()) return false;
-    return book_->decryptEntryToSink(source, crypto(), itemPath, sink, context);
+    // Reuse one open SD handle for the whole reader session rather than
+    // reconstructing and reopening it per encrypted entry.
+    if (!source_.ensureOpen()) return false;
+    return book_->decryptEntryToSink(source_, crypto(), itemPath, sink, context);
   }
 
  private:
-  std::string epubPath_;
+  SdByteSource source_;
   std::unique_ptr<ProtectedBook> book_;
 };
 

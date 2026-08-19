@@ -281,9 +281,19 @@ bool deliverLine(const DrainManifest& mf, const std::string& lineText, std::stri
       }
       // Generous for images (a 4-bit 800x480 BMP is ~192KB), still bounded.
       constexpr size_t MAX_EVENT_DOWNLOAD = 1024 * 1024;
-      return pluginhttp::requestToFile(
+      // Stream to a sibling temp and swap it in only on a clean 2xx, so a
+      // 404/500 error body can never replace an existing dest (e.g. /sleep.bmp).
+      const std::string tmp = dest + ".part";
+      const int st = pluginhttp::requestToFile(
           nullptr, drainSubstituted(handler->req.url, tok, config, meta, vars, ts), handler->req.method,
-          drainSubstituted(handler->req.body, tok, config, meta, vars, ts), headers, dest.c_str(), MAX_EVENT_DOWNLOAD);
+          drainSubstituted(handler->req.body, tok, config, meta, vars, ts), headers, tmp.c_str(), MAX_EVENT_DOWNLOAD);
+      if (st >= 200 && st < 300) {
+        Storage.remove(dest.c_str());  // rename won't overwrite an existing file
+        if (!Storage.rename(tmp.c_str(), dest.c_str())) Storage.remove(tmp.c_str());
+      } else {
+        Storage.remove(tmp.c_str());
+      }
+      return st;
     }
     std::string response;
     return pluginhttp::request(nullptr, drainSubstituted(handler->req.url, tok, config, meta, vars, ts),
