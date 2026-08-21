@@ -286,3 +286,45 @@ families:
       bold:       {url: "https://raw.githubusercontent.com/jacobxperez/lexica-ultralegible/main/fonts/ttf/LexicaUltralegible-Bold.ttf"}
       italic:     {url: "https://raw.githubusercontent.com/jacobxperez/lexica-ultralegible/main/fonts/ttf/LexicaUltralegible-Italic.ttf"}
       bolditalic: {url: "https://raw.githubusercontent.com/jacobxperez/lexica-ultralegible/main/fonts/ttf/LexicaUltralegible-BoldItalic.ttf"}
+
+  # ── Hebrew ─────────────────────────────────────────────────────────────
+
+  - name: FrankRuhlLibre
+    description: "Hebrew serif (Hebrew, Latin)"
+    scripts: [hebrew, latin]
+    intervals: hebrew,latin-ext,ipa-chars,punctuation,reading,symbols
+    sizes: [12, 14, 16, 18]
+    styles:
+      regular: {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/frankruhllibre/FrankRuhlLibre%5Bwght%5D.ttf", variable: {wght: 400}}
+      bold:    {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/frankruhllibre/FrankRuhlLibre%5Bwght%5D.ttf", variable: {wght: 700}}
+
+  - name: DavidLibre
+    description: "Traditional Hebrew serif (Hebrew, Latin)"
+    scripts: [hebrew, latin]
+    intervals: hebrew,latin-ext,ipa-chars,punctuation,reading,symbols
+    sizes: [12, 14, 16, 18]
+    styles:
+      regular: {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/davidlibre/DavidLibre-Regular.ttf"}
+      bold:    {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/davidlibre/DavidLibre-Bold.ttf"}
+
+  - name: Alef
+    description: "Simple, legible Hebrew sans-serif (Hebrew, Latin)"
+    scripts: [hebrew, latin]
+    intervals: hebrew,latin-ext,ipa-chars,punctuation,reading,symbols
+    sizes: [12, 14, 16, 18]
+    styles:
+      regular: {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/alef/Alef-Regular.ttf"}
+      bold:    {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/alef/Alef-Bold.ttf"}
+
+  # ── Arabic ─────────────────────────────────────────────────────────────
+
+  - name: Amiri
+    description: "Arabic naskh-style serif (Arabic, Latin)"
+    scripts: [arabic, latin]
+    intervals: arabic,latin-ext,ipa-chars
+    sizes: [12, 14, 16, 18]
+    styles:
+      regular:    {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Regular.ttf"}
+      bold:       {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Bold.ttf"}
+      italic:     {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Italic.ttf"}
+      bolditalic: {url: "https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-BoldItalic.ttf"}
