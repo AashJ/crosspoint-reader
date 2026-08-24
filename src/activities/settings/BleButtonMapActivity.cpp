@@ -54,9 +54,9 @@ void BleButtonMapActivity::rebuildRows() {
     rowItems[i].actionValue = static_cast<int16_t>(i);
     // Show the remote key currently bound to this function, if any.
     const uint8_t btn = static_cast<uint8_t>(kFunctions[i].button);
-    const auto* entry =
-        std::find_if(std::begin(SETTINGS.bleKeyMap), std::end(SETTINGS.bleKeyMap),
-                     [btn](const CrossPointSettings::BleKeyMapEntry& e) { return e.button == btn && e.keyKind != 0xFF; });
+    const auto* entry = std::find_if(
+        std::begin(SETTINGS.bleKeyMap), std::end(SETTINGS.bleKeyMap),
+        [btn](const CrossPointSettings::BleKeyMapEntry& e) { return e.button == btn && e.keyKind != 0xFF; });
     if (entry != std::end(SETTINGS.bleKeyMap)) {
       bleinput::describeKey(entry->keyKind, entry->keyValue, valueBuf[i], sizeof(valueBuf[i]));
     } else {
@@ -78,8 +78,7 @@ void BleButtonMapActivity::endCapture() {
   requestUpdate();
 }
 
-bool BleButtonMapActivity::assignKey(const MappedInputManager::Button button, const uint8_t kind,
-                                     const uint8_t value) {
+bool BleButtonMapActivity::assignKey(const MappedInputManager::Button button, const uint8_t kind, const uint8_t value) {
   const uint8_t btn = static_cast<uint8_t>(button);
   // Mutated via std::replace_if below and through `slot`; cppcheck's CI parse
   // (no include paths) can't see the writes and suggests const.
