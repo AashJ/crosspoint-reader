@@ -268,9 +268,9 @@ void BluetoothSettingsActivity::drawChrome() {
   UiListActivity::drawChrome();
   // Sub-header: transient banner when set, else the live connection status.
   const auto& metrics = UITheme::getInstance().getMetrics();
-  const char* status = !banner.empty()          ? banner.c_str()
-                       : BleHid.isConnected()   ? BleHid.connectedName()
-                                                : tr(STR_BT_NOT_CONNECTED);
+  const char* status = !banner.empty()        ? banner.c_str()
+                       : BleHid.isConnected() ? BleHid.connectedName()
+                                              : tr(STR_BT_NOT_CONNECTED);
   GUI.drawSubHeader(renderer,
                     Rect{0, metrics.topPadding + metrics.headerHeight, renderer.getScreenWidth(), metrics.tabBarHeight},
                     status);
@@ -284,11 +284,10 @@ void BluetoothSettingsActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
   // Content: the safe area minus the header + status sub-header bands drawChrome paints.
-  screen.setContentMargin(
-      fui::Insets{static_cast<int16_t>(safe.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight),
-                  static_cast<int16_t>(renderer.getScreenWidth() - (safe.x + safe.width)),
-                  static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height)),
-                  static_cast<int16_t>(safe.x)});
+  screen.setContentMargin(fui::Insets{
+      static_cast<int16_t>(safe.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight),
+      static_cast<int16_t>(renderer.getScreenWidth() - (safe.x + safe.width)),
+      static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height)), static_cast<int16_t>(safe.x)});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
   fui::ListProps props;
@@ -296,6 +295,16 @@ void BluetoothSettingsActivity::buildScreen(UiScreen& screen) {
   props.count = static_cast<uint16_t>(rowCount);
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch | fui::InputLongPress;  // physical buttons stay in loop()
+  // Master-switch geometry: larger than the list default so it reads as the
+  // primary control, inset from the row edge, and rounded with the same theme
+  // shape token the buttons and the frontlight panel's sliders inherit.
+  const auto& theme = screen.theme();
+  props.toggleWidth = mappedInput.hasTouch() ? 52 : 44;
+  props.toggleHeight = mappedInput.hasTouch() ? 26 : 22;
+  props.toggleKnobInset = 4;
+  props.toggleRadius = theme.controlRadius;      // clamped to a capsule by the renderer
+  props.toggleKnobRadius = theme.controlRadius;  // ditto for the knob
+  props.valueInset = theme.spaceMd;              // air between switch/value and the row edge
   syncListViewport(screen, props);
   screen.list(props);
 }
