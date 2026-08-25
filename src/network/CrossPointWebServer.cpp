@@ -2113,6 +2113,13 @@ void CrossPointWebServer::handleFetch() {
 
   HalFile file;
   if (requestedOffset == 0) {
+    // Mirror handlePluginFs(): create missing parents so a plugin's first fetch
+    // into a fresh subfolder (e.g. /.crosspoint/plugins/<name>/) doesn't fail
+    // before anything has a chance to create it.
+    const size_t lastSlash = dest.rfind('/');
+    if (lastSlash != std::string::npos && lastSlash > 0) {
+      Storage.ensureDirectoryExists(dest.substr(0, lastSlash).c_str());
+    }
     Storage.remove(dest.c_str());
     if (!Storage.openFileForWrite("PLG", dest, file)) {
       server->send(500, "application/json", "{\"error\":\"cannot create file\"}");
