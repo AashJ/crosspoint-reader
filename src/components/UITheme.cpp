@@ -68,25 +68,6 @@ const ThemeMetrics& UITheme::getMetrics() const {
   return adjustedMetrics;
 }
 
-int UITheme::getNumberOfItemsPerPage(const GfxRenderer& renderer, bool hasHeader, bool hasTabBar, bool hasButtonHints,
-                                     bool hasSubtitle, int extraReservedHeight) {
-  const ThemeMetrics metrics = UITheme::getInstance().getMetrics();
-  auto orientation = renderer.getOrientation();
-  int reservedHeight = metrics.topPadding;
-  if (hasHeader) {
-    reservedHeight += metrics.headerHeight + metrics.verticalSpacing;
-  }
-  if (hasTabBar) {
-    reservedHeight += metrics.tabBarHeight;
-  }
-  if (hasButtonHints && orientation != GfxRenderer::Orientation::LandscapeClockwise &&
-      orientation != GfxRenderer::Orientation::LandscapeCounterClockwise) {
-    reservedHeight += metrics.verticalSpacing + metrics.buttonHintsHeight;
-  }
-  const int availableHeight = renderer.getScreenHeight() - reservedHeight - extraReservedHeight;
-  return UITheme::getInstance().getTheme().getListPageItems(availableHeight, hasSubtitle);
-}
-
 // Full drawable content area: screen minus the board's viewable insets (bezel /
 // rounded-corner clearance), oriented to the current rotation. The single place
 // the inset math lives; every screen derives its content bounds from here (or
