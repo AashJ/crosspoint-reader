@@ -238,10 +238,9 @@ void HomeActivity::loop() {
   const int recentCount = std::min(static_cast<int>(recentBooks.size()), coverColumnCount);
   const int coverColumnWidth = (content.width - 2 * metrics.contentSidePadding) / coverColumnCount;
   int touchedBook = -1;
-  const auto coverTouch =
-      mappedInput.colTouch(touchedBook, content.x + metrics.contentSidePadding, coverColumnWidth, recentCount,
-                           metrics.homeTopPadding, metrics.homeTopPadding + metrics.homeCoverTileHeight,
-                           coverColumnWidth);
+  const auto coverTouch = mappedInput.colTouch(touchedBook, content.x + metrics.contentSidePadding, coverColumnWidth,
+                                               recentCount, metrics.homeTopPadding,
+                                               metrics.homeTopPadding + metrics.homeCoverTileHeight, coverColumnWidth);
   if (coverTouch != MappedInputManager::RowTouch::None) {
     if (coverTouch == MappedInputManager::RowTouch::Down) {
       if (selectorIndex != touchedBook) {
