@@ -211,7 +211,11 @@ bool HalGPIO::isXteinkDevice() const {
 }
 
 bool HalGPIO::verifyPowerButtonWakeup() {
-  if (BoardConfig::isPaperMono() || BoardConfig::ACTIVE.input.power < 0) {
+  // M5Paper v1.1: the classic ESP32's reset-to-setup() latency exceeds a normal
+  // wheel click, so a click wake is always released before this samples and
+  // verification would re-sleep on every wake. Its wheel has hard external
+  // pull-ups, so the ghost-wake debounce this implements is not needed.
+  if (BoardConfig::isPaperMono() || BoardConfig::isM5PaperV11() || BoardConfig::ACTIVE.input.power < 0) {
     return true;
   }
 

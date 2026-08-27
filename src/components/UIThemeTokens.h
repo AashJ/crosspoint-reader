@@ -21,13 +21,13 @@ inline freeink::ui::ThemeTokens uiThemeTokens(const freeink::ui::GfxRendererTarg
   tokens.listSelectionStyle = static_cast<fui::SelectionStyle>(metrics.listSelectionStyle);
   tokens.listScrollWidth = static_cast<int16_t>(metrics.listScrollWidth);
   tokens.listScrollSide = static_cast<uint8_t>(metrics.listScrollSide);
-  // The scroll track hugs the band edge; on boards whose panel sits recessed
-  // behind the bezel the edge columns are covered, so push the indicator
-  // inward past the covered side. Bezel truth is per-board data
-  // (BoardConfig::ViewableInsets); lists render in the portrait UI frame, so
-  // the panel-native portrait insets apply directly.
-  const auto& vi = BoardConfig::ACTIVE.viewableInsets;
-  tokens.listScrollInset = static_cast<int16_t>(metrics.listScrollSide == 1 ? vi.left : vi.right);
+  // The scroll track hugs the band edge. Bezel clearance on recessed panels is
+  // now handled systemically: the fui DeviceContext carries the board's
+  // ViewableInsets as its safe area, so every list rect (Screen::body()) is
+  // already recessed past the covered columns. Adding the inset again here would
+  // double-count it (the track would sit twice as far in as the header battery),
+  // so the track only needs to hug that already-safe edge.
+  tokens.listScrollInset = 0;
   // Screen::header()/status() band height. Without this the SDK's
   // line-height-derived default applies and fui-drawn headers (OPDS) come out
   // a different height than every GUI.drawHeader band.

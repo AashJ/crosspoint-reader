@@ -471,7 +471,12 @@ void setup() {
       // us in a splashless-with-no-frame loop on the next boot.
       APP_STATE.showBootScreen = true;
       APP_STATE.saveToFile();
-      if (Storage.exists(SLEEP_FRAME_FILE) && loadSleepFrameBuffer()) {
+      // Not on M5Paper: its IT8951 driver INIT-wipes the panel in begin() (the
+      // EPD rail is cut in sleep), so the "panel still shows the sleep image"
+      // premise is false — repainting the saved frame would re-introduce the
+      // cover only for the first reader paint to ghost through it. Boot from
+      // the wiped white panel instead.
+      if (!BoardConfig::isM5PaperV11() && Storage.exists(SLEEP_FRAME_FILE) && loadSleepFrameBuffer()) {
         const bool useDifferentialRefresh = gpio.deviceIsX3();
         if (useDifferentialRefresh) {
           // begin() clears the X3 controller RAM, so restore the saved frame as
