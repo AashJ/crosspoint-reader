@@ -196,8 +196,14 @@ inline std::vector<StrId> buildLongPressMenuValues() {
 // the font-family entry is replaced in that copy with a registry-aware version.
 // The font-size entry is always rebuilt, since its options are point sizes read
 // from the active family rather than a fixed enum.
+// forPersistence: fromJson()/toJson() pass true so the runtime frontlight probe
+// cannot drop a persisted key. Frontlight.present() is false until
+// Frontlight.begin() runs the I2C probe, which happens AFTER SETTINGS.loadFromFile();
+// filtering the persistence list on it would fail to restore (and later overwrite)
+// STR_RESTORE_LIGHT_ON_WAKE on frontlit EEGO A4 units. The UI list still filters it.
 inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* registry = nullptr,
-                                                const std::vector<DictionaryEntry>* dictionaries = nullptr) {
+                                                const std::vector<DictionaryEntry>* dictionaries = nullptr,
+                                                bool forPersistence = false) {
   static const std::vector<SettingInfo> baseList = [] {
     // Enum settings are persisted as numeric values. Assign these labels by enum
     // value so a reordered menu or enum cannot silently swap their behavior.
@@ -486,8 +492,9 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
             v.end());
   }
   // Frontlit and lightless variants of a board share one binary (EEGO A4);
-  // presence is the I2C probe result from Frontlight.begin().
-  if (!Frontlight.present()) {
+  // presence is the I2C probe result from Frontlight.begin(). UI-only: the probe
+  // has not run at load time, so persistence must keep the key (forPersistence).
+  if (!forPersistence && !Frontlight.present()) {
     v.erase(std::remove_if(v.begin(), v.end(),
                            [](const SettingInfo& s) { return s.nameId == StrId::STR_RESTORE_LIGHT_ON_WAKE; }),
             v.end());
