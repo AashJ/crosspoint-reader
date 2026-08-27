@@ -86,6 +86,14 @@ void CrossPointWebServerActivity::onEnter() {
   lastHandleClientTime = 0;
   requestUpdate();
 
+  if (startInJoinNetwork) {
+    // Came back from the heap-defrag reboot on a pristine heap: skip the mode
+    // picker and go straight into Join Network (onNetworkModeSelected won't
+    // reboot again while this flag is set).
+    onNetworkModeSelected(NetworkMode::JOIN_NETWORK);
+    return;
+  }
+
   // Launch network mode selection subactivity
   LOG_DBG("WEBACT", "Launching NetworkModeSelectionActivity...");
   startActivityForResult(std::make_unique<NetworkModeSelectionActivity>(renderer, mappedInput),
@@ -127,6 +135,15 @@ void CrossPointWebServerActivity::onExit() {
 }
 
 void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) {
+  // Join Network brings up WiFi + the web server + TLS relays, whose working set
+  // needs a large *contiguous* block. After reading/browsing the heap is
+  // fragmented enough that tight boards (X3) abort mid-activation. Reboot once
+  // into a pristine heap and land straight back here; the flag prevents a second
+  // reboot on that return. No-op on touch boards, which fall through.
+  if (mode == NetworkMode::JOIN_NETWORK && !startInJoinNetwork) {
+    silentRestartToJoinNetwork();  // does not return on non-touch boards
+  }
+
   const char* modeName = "Join Network";
   if (mode == NetworkMode::CONNECT_CALIBRE) {
     modeName = "Connect to Calibre";

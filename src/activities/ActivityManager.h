@@ -82,6 +82,7 @@ class ActivityManager {
 
   // goTo... functions are convenient wrapper for replaceActivity()
   void goToFileTransfer();
+  void goToJoinNetwork();  // File Transfer straight into Join Network (post heap-defrag reboot)
   void goToSettings();
   void goToFileBrowser(std::string path = {});
   void goToRecentBooks();
