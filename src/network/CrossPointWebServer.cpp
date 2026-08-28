@@ -2355,33 +2355,29 @@ void CrossPointWebServer::handlePluginFs() {
     return;
   }
 
-  // Resolve the body before touching the filesystem. PluginHost sends the file
-  // base64-encoded (enc=base64) so a binary payload with NUL bytes survives the
-  // WebServer's String parsing, which otherwise truncates at the first NUL. A
-  // legacy raw body (no enc) is written verbatim.
+  // PluginHost posts the file as a raw octet-stream body (base64 is decoded in
+  // the browser), so the device writes it verbatim — no on-device base64 decode
+  // buffer. Decoding here instead cost ~2.3x the peak RAM (the base64 body String
+  // plus the decoded copy) and OOM'd the credential write on low-RAM (C3) boards
+  // after the activation TLS relays. rawData.length() carries embedded NULs, so
+  // binary payloads survive intact.
   const String& rawData = server->arg("plain");
-  std::string decoded;
-  const uint8_t* data = reinterpret_cast<const uint8_t*>(rawData.c_str());
-  size_t dataSize = rawData.length();
-  if (server->arg("enc") == "base64") {
-    const size_t encLen = rawData.length();
-    // Plugin files (config, token, rights, credential) are small; the cap also
-    // bounds the fallible resize below under -fno-exceptions.
-    static constexpr size_t kMaxPluginFile = 256 * 1024;
-    if (encLen > kMaxPluginFile) {
-      server->send(413, "application/json", "{\"error\":\"too large\"}");
-      return;
-    }
-    decoded.resize((encLen * 3) / 4 + 3);
-    const int32_t dn = freeink::content::base64Decode(rawData.c_str(), encLen,
-                                                      reinterpret_cast<uint8_t*>(decoded.data()), decoded.size());
-    if (dn < 0) {
-      server->send(400, "application/json", "{\"error\":\"bad base64\"}");
-      return;
-    }
-    decoded.resize(static_cast<size_t>(dn));
-    data = reinterpret_cast<const uint8_t*>(decoded.data());
-    dataSize = decoded.size();
+  const auto* data = reinterpret_cast<const uint8_t*>(rawData.c_str());
+  const size_t dataSize = rawData.length();
+
+  // A plugin file (config, token, rights, credential) is never legitimately
+  // empty. An empty body means it was dropped in transit — e.g. the WebServer
+  // could not buffer the request on a fragmented heap. Reject BEFORE opening the
+  // file, so a failed write never truncates a good existing credential to 0
+  // bytes (the exact "0-byte content.key" failure this guards against).
+  if (dataSize == 0) {
+    server->send(400, "application/json", "{\"error\":\"empty body\"}");
+    return;
+  }
+  static constexpr size_t kMaxPluginFile = 256 * 1024;
+  if (dataSize > kMaxPluginFile) {
+    server->send(413, "application/json", "{\"error\":\"too large\"}");
+    return;
   }
 
   // ensureDirectoryExists() creates missing parents along the way, so this
@@ -2395,7 +2391,7 @@ void CrossPointWebServer::handlePluginFs() {
     server->send(500, "application/json", "{\"error\":\"cannot write\"}");
     return;
   }
-  const size_t n = dataSize == 0 ? 0 : f.write(data, dataSize);
+  const size_t n = f.write(data, dataSize);
   f.flush();
   f.close();
 

@@ -86,15 +86,20 @@
     },
     crypto(op, fields) { return this._post('/api/crypto', Object.assign({ op }, fields || {})); },
     async writeFile(plugin, path, dataB64) {
-      // Send the base64 as-is (enc=base64); the device decodes it. Base64 is
-      // NUL-free ASCII, so a binary payload survives the WebServer's String
-      // parsing, which would otherwise truncate a raw body at the first NUL.
+      // Decode base64 in the browser and POST raw bytes. The device writes the
+      // body verbatim, so it never holds a second decoded copy — decoding on the
+      // device cost ~2.3x the RAM and OOM'd the credential write on low-RAM (C3)
+      // boards mid-activation. The body length carries embedded NULs, so binary
+      // payloads survive intact.
+      const binary = atob(dataB64 || '');
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       const url = '/api/plugin-fs?plugin=' + encodeURIComponent(plugin) +
-        '&path=' + encodeURIComponent(path) + '&enc=base64';
+        '&path=' + encodeURIComponent(path);
       const r = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
-        body: dataB64 || ''
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: bytes
       });
       if (!r.ok) {
         let detail = '';
