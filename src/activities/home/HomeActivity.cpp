@@ -293,6 +293,28 @@ void HomeActivity::render(RenderLock&&) {
   // self-insets in drawHeader, so only the cover/menu need it here.
   const Rect content = UITheme::getInstance().getContentArea(renderer);
 
+  // Record the tile rect so storeCoverBuffer (called from the theme) knows which
+  // sub-region of the framebuffer to snapshot. ~16 KB in Portrait instead of the
+  // 48 KB full framebuffer the previous bind captured. Assigned before the
+  // restore below because a stored buffer is only valid for the geometry it was
+  // captured at: a theme/orientation change (the control center can move
+  // SETTINGS.orientation while Home sits on the stack and re-renders) shifts the
+  // tile, so drop the stale buffer instead of blitting it into the new rect and
+  // skipping the repaint.
+  const int coverRectXNew = content.x;
+  const int coverRectYNew = metrics.homeTopPadding;
+  const int coverRectWNew = content.width;
+  const int coverRectHNew = metrics.homeCoverTileHeight;
+  if (coverRectXNew != coverRectX || coverRectYNew != coverRectY || coverRectWNew != coverRectW ||
+      coverRectHNew != coverRectH) {
+    freeCoverBuffer();  // clears coverBufferStored
+    coverRendered = false;
+  }
+  coverRectX = coverRectXNew;
+  coverRectY = coverRectYNew;
+  coverRectW = coverRectWNew;
+  coverRectH = coverRectHNew;
+
   renderer.clearScreen();
   bool bufferRestored = coverBufferStored && restoreCoverBuffer();
 
@@ -302,16 +324,8 @@ void HomeActivity::render(RenderLock&&) {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.homeTopPadding - metrics.topPadding},
                  metrics.homeContinueReadingInMenu && !recentBooks.empty() ? recentBooks[0].title.c_str() : nullptr);
 
-  // Record the tile rect so storeCoverBuffer (called from the theme) knows
-  // which sub-region of the framebuffer to snapshot. ~16 KB in Portrait
-  // instead of the 48 KB full framebuffer the previous bind captured.
-  coverRectX = content.x;
-  coverRectY = metrics.homeTopPadding;
-  coverRectW = content.width;
-  coverRectH = metrics.homeCoverTileHeight;
-
-  GUI.drawRecentBookCover(renderer, Rect{content.x, metrics.homeTopPadding, content.width, metrics.homeCoverTileHeight},
-                          recentBooks, selectorIndex, coverRendered, coverBufferStored, bufferRestored,
+  GUI.drawRecentBookCover(renderer, Rect{coverRectX, coverRectY, coverRectW, coverRectH}, recentBooks, selectorIndex,
+                          coverRendered, coverBufferStored, bufferRestored,
                           std::bind(&HomeActivity::storeCoverBuffer, this));
 
   // Build menu items dynamically
