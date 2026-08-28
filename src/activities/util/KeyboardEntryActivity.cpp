@@ -8,6 +8,7 @@
 
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
+#include "components/UiAppHelpers.h"
 #include "fontIds.h"
 
 namespace fui = freeink::ui;
@@ -946,7 +947,7 @@ void KeyboardEntryActivity::render(RenderLock&&) {
   fui::GfxRendererTarget target(renderer);
   target.setFont(fui::GfxRendererTarget::FONT_SMALL, SMALL_FONT_ID);
   target.setFont(fui::GfxRendererTarget::FONT_BODY, UI_12_FONT_ID);
-  const fui::DeviceContext device = target.deviceContext();
+  const fui::DeviceContext device = uiDeviceContext(renderer, target);
   const fui::InputSnapshot noInput{};
   fui::Frame<48> frame(target, device, noInput, interactions);
 

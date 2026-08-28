@@ -68,10 +68,8 @@ const ThemeMetrics& UITheme::getMetrics() const {
   return adjustedMetrics;
 }
 
-// Full drawable content area: screen minus the board's viewable insets (bezel /
-// rounded-corner clearance), oriented to the current rotation. The single place
-// the inset math lives; every screen derives its content bounds from here (or
-// from getScreenSafeArea, which builds on it).
+// Drawable bounds for legacy firmware layouts. FreeInkUI receives the same
+// oriented board insets through DeviceContext.
 Rect UITheme::getContentArea(const GfxRenderer& renderer) {
   int viTop = 0, viRight = 0, viBottom = 0, viLeft = 0;
   renderer.getOrientedViewableTRBL(&viTop, &viRight, &viBottom, &viLeft);

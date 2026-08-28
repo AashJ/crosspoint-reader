@@ -844,10 +844,7 @@ void WifiSelectionActivity::render(RenderLock&&) {
   // so 32 truncated it. See ClockSyncActivity for the same class of bug.
   char countStr[64];
   snprintf(countStr, sizeof(countStr), tr(STR_NETWORKS_FOUND), realNetworkCount);
-  // drawHeader self-insets by the board's viewable margins, so it takes a
-  // full-width rect (the contract every other caller uses). Passing the already
-  // safe-inset `screen` here double-inset the header on bezel panels (EEGO A4).
-  GUI.drawHeader(renderer, Rect{0, screen.y + metrics.topPadding, renderer.getScreenWidth(), metrics.headerHeight},
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
                  tr(STR_WIFI_NETWORKS), countStr);
   GUI.drawSubHeader(
       renderer,
@@ -899,12 +896,11 @@ void WifiSelectionActivity::buildListScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const Rect safe = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
   // Content below the header + MAC sub-band, above the legend line.
-  screen.setContentMargin(fui::Insets{
-      static_cast<int16_t>(safe.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight +
-                           metrics.verticalSpacing),
-      static_cast<int16_t>(renderer.getScreenWidth() - (safe.x + safe.width)),
-      static_cast<int16_t>(renderer.getScreenHeight() - (safe.y + safe.height) + metrics.verticalSpacing * 2),
-      static_cast<int16_t>(safe.x)});
+  auto margins = contentMargins(renderer, safe);
+  margins.top +=
+      static_cast<int16_t>(metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight + metrics.verticalSpacing);
+  margins.bottom += static_cast<int16_t>(metrics.verticalSpacing * 2);
+  screen.setContentMargin(margins);
 
   if (state == WifiSelectionState::SAVE_PROMPT || state == WifiSelectionState::FORGET_PROMPT) {
     buildPromptDialog(screen);
