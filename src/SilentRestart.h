@@ -11,3 +11,7 @@ void silentRestartToReader();  // currently-open EPUB (APP_STATE.openEpubPath)
 // no-op on touch boards (a soft reset would cycle their externally-powered
 // rails); the caller then proceeds without a reboot.
 void silentRestartToJoinNetwork();
+
+// Reboots immediately after an activity releases exclusive raw storage. The
+// RTC target ensures setup() lands on Home instead of resuming a reader.
+void restartToHomeAfterStorageHandoff();
