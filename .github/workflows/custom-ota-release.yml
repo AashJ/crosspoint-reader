@@ -17,8 +17,8 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     env:
-      CUSTOM_VERSION: 1000.0.${{ github.run_number }}
-      CUSTOM_TAG: v1000.0.${{ github.run_number }}
+      CUSTOM_VERSION: 1000.1.${{ github.run_number }}
+      CUSTOM_TAG: v1000.1.${{ github.run_number }}
 
     steps:
       - uses: actions/checkout@v6
@@ -31,8 +31,8 @@ jobs:
 
       - name: Set custom firmware version
         run: |
-          sed -i -E "0,/^version = /s//version = ${CUSTOM_VERSION}/" platformio.ini
-          grep -F "version = ${CUSTOM_VERSION}" platformio.ini
+          sed -i -E "s/^version = .*/version = ${CUSTOM_VERSION}/" platformio.ini
+          grep -Fx "version = ${CUSTOM_VERSION}" platformio.ini
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7

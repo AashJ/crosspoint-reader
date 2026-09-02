@@ -2,7 +2,7 @@
 
 This fork publishes X4 Pro firmware from GitHub Actions and checks
 `AashJ/crosspoint-reader` for updates. Each workflow run uses a monotonically
-increasing version in the `1000.0.N` range so custom releases remain newer than
+increasing version in the `1000.1.N` range so custom releases remain newer than
 upstream versions.
 
 ## Bootstrap once
@@ -29,8 +29,8 @@ manually from GitHub Actions if a rebuild is needed.
 On the reader, open **Settings → System → Check for updates** and confirm the
 update. Publishing never initiates an update on the device by itself.
 
-The release workflow embeds `1000.0.<GitHub run number>` in the firmware, shows
-`1000.0.<GitHub run number>-aj` in the Settings header, and uses the numeric
+The release workflow embeds `1000.1.<GitHub run number>` in the firmware, shows
+`1000.1.<GitHub run number>-aj` in the Settings header, and uses the numeric
 value for the release tag. It also publishes a SHA-256 checksum. GitHub Releases
 and their firmware assets are public because this fork is public.
 
