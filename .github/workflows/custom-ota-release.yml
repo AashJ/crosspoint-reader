@@ -1,13 +1,16 @@
 name: Publish Custom X4 Pro OTA
 
 on:
+  push:
+    branches:
+      - release/aj-rc
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: custom-x4pro-ota-release
+  group: custom-x4pro-ota-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

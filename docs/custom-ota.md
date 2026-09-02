@@ -15,19 +15,24 @@ pio run -e x4pro
 ```
 
 The resulting image is `.pio/build/x4pro/firmware.bin`. After this image is
-installed, **Settings → System → Check for updates** uses this fork's releases.
+installed, the Settings header displays the build version with the `-aj` suffix,
+and **Settings → System → Check for updates** uses this fork's releases.
 
 ## Publish an update
 
-1. Push the desired commit or branch to `AashJ/crosspoint-reader`.
-2. Open **Actions → Publish Custom X4 Pro OTA → Run workflow**.
-3. Select the branch containing the desired firmware and run it.
-4. Wait for the workflow to publish `firmware-x4pro.bin` as a GitHub Release.
-5. On the reader, open **Settings → System → Check for updates** and confirm the update.
+The release branch is `release/aj-rc`. Merge a tested feature branch into it,
+then wait for **Publish Custom X4 Pro OTA** to finish in GitHub Actions. Every
+commit that lands on the release branch automatically builds and publishes
+`firmware-x4pro.bin` as the latest GitHub Release. The workflow can also be run
+manually from GitHub Actions if a rebuild is needed.
 
-The release workflow embeds `1000.0.<GitHub run number>` in the firmware and
-uses the same value for the release tag. It also publishes a SHA-256 checksum.
-GitHub Releases and their firmware assets are public because this fork is public.
+On the reader, open **Settings → System → Check for updates** and confirm the
+update. Publishing never initiates an update on the device by itself.
+
+The release workflow embeds `1000.0.<GitHub run number>` in the firmware, shows
+`1000.0.<GitHub run number>-aj` in the Settings header, and uses the numeric
+value for the release tag. It also publishes a SHA-256 checksum. GitHub Releases
+and their firmware assets are public because this fork is public.
 
 The reader streams the download into the inactive OTA application partition,
 validates the ESP32 chip and CrossPoint board tag, and changes the boot slot only

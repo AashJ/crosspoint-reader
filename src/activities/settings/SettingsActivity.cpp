@@ -1,5 +1,9 @@
 #include "SettingsActivity.h"
 
+#ifndef CROSSPOINT_SETTINGS_VERSION
+#define CROSSPOINT_SETTINGS_VERSION CROSSPOINT_VERSION
+#endif
+
 #include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
@@ -520,7 +524,7 @@ void SettingsActivity::render(RenderLock&&) {
   // Version rides in the header's trailing label slot: the footer position
   // conflicts with button hints on non-touch devices.
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_SETTINGS_TITLE),
-                 CROSSPOINT_VERSION);
+                 CROSSPOINT_SETTINGS_VERSION);
 
   renderUi();
 
