@@ -90,10 +90,16 @@ void ActivityManager::loop() {
   }
 
   if (currentActivity) {
-    if (!currentActivity->isHomeActivity() && mappedInput.wasHomeGesture()) {
-      if (currentActivity->handleHomeGesture()) {
+    if (currentActivity->isHomeActivity()) {
+      // Home-key boards keep Home on the capacitive key and leave the bottom
+      // edge free; other touch boards already report that same bottom-edge
+      // swipe through wasHomeGesture(). Both open the home utility sheet.
+      if ((mappedInput.wasHomeGesture() || mappedInput.wasReaderMenuSwipeUp()) &&
+          currentActivity->handleHomeGesture()) {
         return;
       }
+    } else if (mappedInput.wasHomeGesture()) {
+      if (currentActivity->handleHomeGesture()) return;
       goHome();
       return;
     }
