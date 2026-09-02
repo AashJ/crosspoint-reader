@@ -14,6 +14,11 @@ constexpr fui::ActionId ACTION_MENU = 2;
 constexpr fui::ActionId ACTION_UTILITY = 3;
 constexpr fui::ActionId ACTION_DISMISS = 4;
 
+constexpr uint16_t visibleBookEnd(const uint16_t topIndex, const uint16_t bookCount, const uint16_t visibleBooks) {
+  const uint32_t end = static_cast<uint32_t>(topIndex) + visibleBooks;
+  return static_cast<uint16_t>(std::min<uint32_t>(bookCount, end));
+}
+
 struct Labels {
   const char* menu = nullptr;
   const char* empty = nullptr;

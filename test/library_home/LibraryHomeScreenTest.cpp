@@ -121,6 +121,12 @@ void testLandscapeLayout() {
   CHECK_EQ(layout.visibleBooks, 5);
 }
 
+void testVisibleBookRange() {
+  CHECK_EQ(library_home::visibleBookEnd(0, 10, 6), 6);
+  CHECK_EQ(library_home::visibleBookEnd(6, 10, 6), 10);
+  CHECK_EQ(library_home::visibleBookEnd(10, 10, 6), 10);
+}
+
 void testBookAndMenuRouting() {
   Harness harness;
   harness.app.render();
@@ -158,6 +164,7 @@ void testGestures() {
 int main() {
   testPortraitLayout();
   testLandscapeLayout();
+  testVisibleBookRange();
   testBookAndMenuRouting();
   testSheetRouting();
   testGestures();

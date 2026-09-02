@@ -1,6 +1,9 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -14,6 +17,22 @@ struct RecentBook;
 class HomeActivity final : public Activity, protected UiAppHost {
   static constexpr int kMaxLibraryBooks = 10;
   static constexpr int kMaxUtilities = 4;
+#if defined(BOARD_HAS_PSRAM)
+  static constexpr size_t kCoverCacheSlots = 6;
+#else
+  static constexpr size_t kCoverCacheSlots = 3;
+#endif
+
+  struct CoverCacheDeleter {
+    void operator()(uint8_t* ptr) const;
+  };
+
+  struct CoverCacheEntry {
+    freeink::ui::Rect rect{};
+    uint16_t bookIndex = UINT16_MAX;
+    int thumbnailHeight = 0;
+    bool valid = false;
+  };
 
   enum Utility : int16_t {
     AddBooks = 0,
@@ -27,6 +46,8 @@ class HomeActivity final : public Activity, protected UiAppHost {
   // Resolved once after thumbnail generation so ordinary selection repaints
   // do not construct temporary path strings in the render hot path.
   std::array<std::string, kMaxLibraryBooks> coverPaths;
+  std::unique_ptr<uint8_t[], CoverCacheDeleter> coverCache;
+  std::array<CoverCacheEntry, kCoverCacheSlots> coverCacheEntries{};
   library_home::ScreenStorage screenStorage;
   freeink::ui::TileGridItem utilityItems[kMaxUtilities];
 
@@ -37,12 +58,15 @@ class HomeActivity final : public Activity, protected UiAppHost {
   uint16_t topIndex = 0;
   uint16_t visibleBooks = 6;
   uint16_t utilityCount = 0;
+  uint16_t loadedCoverTopIndex = UINT16_MAX;
+  size_t coverCacheSlotSize = 0;
   int coverHeight = 0;
   bool menuOpen = false;
   bool recentsLoading = false;
   bool recentsLoaded = false;
   bool firstRenderDone = false;
   bool hasOpdsServers = false;
+  bool coverCacheAllocationFailed = false;
 
   static void homeScreen(UiScreen& screen, void* user);
   static void onBookEvent(const freeink::ui::ActionEvent& event, void* user);
@@ -58,6 +82,8 @@ class HomeActivity final : public Activity, protected UiAppHost {
   void loadRecentBooks(int maxBooks);
   void loadRecentCovers(int requestedCoverHeight);
   void refreshCoverPaths(int requestedCoverHeight);
+  bool ensureCoverCache(freeink::ui::Rect coverRect);
+  void clearCoverCache();
   void selectNextPage(bool forward);
   void syncBookPage();
   void openMenu(int utilityIndex = 0);

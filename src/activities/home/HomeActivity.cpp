@@ -8,6 +8,7 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Xtc.h>
+#include <esp_heap_caps.h>
 
 #include <algorithm>
 
@@ -18,6 +19,26 @@
 #include "components/UiAppHelpers.h"
 
 namespace fui = freeink::ui;
+
+namespace {
+
+size_t maximumCoverRegionBytes(const fui::Rect rect) {
+  if (rect.width <= 0 || rect.height <= 0) return 0;
+  // Region copies widen the physical x span to byte boundaries. Account for
+  // the worst starting bit in both unrotated and 90-degree orientations.
+  const size_t unrotatedRowBytes = (static_cast<size_t>(rect.width) + 14) / 8;
+  const size_t rotatedRowBytes = (static_cast<size_t>(rect.height) + 14) / 8;
+  return std::max(unrotatedRowBytes * static_cast<size_t>(rect.height),
+                  rotatedRowBytes * static_cast<size_t>(rect.width));
+}
+
+bool sameRect(const fui::Rect left, const fui::Rect right) {
+  return left.x == right.x && left.y == right.y && left.width == right.width && left.height == right.height;
+}
+
+}  // namespace
+
+void HomeActivity::CoverCacheDeleter::operator()(uint8_t* ptr) const { heap_caps_free(ptr); }
 
 void HomeActivity::loadRecentBooks(const int maxBooks) {
   recentBooks.clear();
@@ -50,11 +71,16 @@ void HomeActivity::loadRecentCovers(const int requestedCoverHeight) {
   bool showingLoading = false;
   Rect popupRect;
   int progress = 0;
+  bool needsRedraw = coverHeight != requestedCoverHeight || loadedCoverTopIndex == UINT16_MAX;
 
   refreshCoverPaths(requestedCoverHeight);
-  for (RecentBook& book : recentBooks) {
+  const uint16_t first = std::min<uint16_t>(topIndex, static_cast<uint16_t>(recentBooks.size()));
+  const uint16_t end = library_home::visibleBookEnd(first, static_cast<uint16_t>(recentBooks.size()), visibleBooks);
+  const int visibleCount = std::max<int>(1, end - first);
+  for (uint16_t i = first; i < end; ++i) {
+    RecentBook& book = recentBooks[i];
     if (!book.coverBmpPath.empty()) {
-      const std::string coverPath = UITheme::getCoverThumbPath(book.coverBmpPath, requestedCoverHeight);
+      const std::string& coverPath = coverPaths[i];
       if (!Storage.exists(coverPath.c_str())) {
         bool success = false;
         if (FsHelpers::hasEpubExtension(book.path)) {
@@ -64,8 +90,9 @@ void HomeActivity::loadRecentCovers(const int requestedCoverHeight) {
               showingLoading = true;
               popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
             }
-            GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / static_cast<int>(recentBooks.size())));
+            GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / visibleCount));
             success = epub.generateThumbBmp(requestedCoverHeight);
+            needsRedraw = needsRedraw || success;
           }
         } else if (FsHelpers::hasXtcExtension(book.path)) {
           Xtc xtc(book.path, "/.crosspoint");
@@ -74,8 +101,9 @@ void HomeActivity::loadRecentCovers(const int requestedCoverHeight) {
               showingLoading = true;
               popupRect = GUI.drawPopup(renderer, tr(STR_LOADING_POPUP));
             }
-            GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / static_cast<int>(recentBooks.size())));
+            GUI.fillPopupProgress(renderer, popupRect, 10 + progress * (90 / visibleCount));
             success = xtc.generateThumbBmp(requestedCoverHeight);
+            needsRedraw = needsRedraw || success;
           }
         }
 
@@ -89,11 +117,12 @@ void HomeActivity::loadRecentCovers(const int requestedCoverHeight) {
   }
 
   refreshCoverPaths(requestedCoverHeight);
+  loadedCoverTopIndex = first;
   recentsLoaded = true;
   recentsLoading = false;
   const bool hasCover =
       std::any_of(coverPaths.begin(), coverPaths.end(), [](const std::string& path) { return !path.empty(); });
-  if (hasCover) requestUpdate();
+  if (needsRedraw && hasCover) requestUpdate();
 }
 
 void HomeActivity::configureUtilities() {
@@ -158,6 +187,7 @@ void HomeActivity::onEnter() {
 
 void HomeActivity::onExit() {
   closeRouting();
+  clearCoverCache();
   recentBooks.clear();
   for (std::string& path : coverPaths) path.clear();
   Activity::onExit();
@@ -178,12 +208,70 @@ bool HomeActivity::paintCover(fui::DrawTarget&, const fui::Rect rect, const fui:
     return false;
   }
 
+  const uint16_t visibleSlot = index >= self->topIndex ? static_cast<uint16_t>(index - self->topIndex) : UINT16_MAX;
+  CoverCacheEntry* cacheEntry =
+      visibleSlot < self->coverCacheEntries.size() ? &self->coverCacheEntries[visibleSlot] : nullptr;
+  if (cacheEntry && cacheEntry->valid && cacheEntry->bookIndex == index &&
+      cacheEntry->thumbnailHeight == self->coverHeight && sameRect(cacheEntry->rect, rect) && self->coverCache &&
+      self->renderer.copyBufferToRegion(rect.x, rect.y, rect.width, rect.height,
+                                        self->coverCache.get() + visibleSlot * self->coverCacheSlotSize,
+                                        self->coverCacheSlotSize)) {
+    return true;
+  }
+
   HalFile file;
   if (!Storage.openFileForRead("HOME", self->coverPaths[index], file)) return false;
   Bitmap bitmap(file);
   if (bitmap.parseHeaders() != BmpReaderError::Ok) return false;
   self->renderer.drawBitmap(bitmap, rect.x, rect.y, rect.width, rect.height);
+
+  if (cacheEntry && self->ensureCoverCache(rect)) {
+    uint8_t* slot = self->coverCache.get() + visibleSlot * self->coverCacheSlotSize;
+    cacheEntry->valid =
+        self->renderer.copyRegionToBuffer(rect.x, rect.y, rect.width, rect.height, slot, self->coverCacheSlotSize);
+    if (cacheEntry->valid) {
+      cacheEntry->bookIndex = index;
+      cacheEntry->thumbnailHeight = self->coverHeight;
+      cacheEntry->rect = rect;
+    }
+  }
   return true;
+}
+
+bool HomeActivity::ensureCoverCache(const fui::Rect coverRect) {
+  const size_t requiredSlotSize = maximumCoverRegionBytes(coverRect);
+  if (requiredSlotSize == 0 || coverCacheAllocationFailed) return false;
+  if (coverCache && coverCacheSlotSize >= requiredSlotSize) return true;
+
+  clearCoverCache();
+  const size_t requiredBytes = requiredSlotSize * coverCacheEntries.size();
+#if defined(BOARD_HAS_PSRAM)
+  constexpr uint32_t cacheCaps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#else
+  constexpr uint32_t cacheCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+#endif
+  // The capability allocator keeps X4 Pro cover pixels in PSRAM instead of
+  // consuming internal DRAM. unique_ptr owns the allocation immediately and
+  // releases it through heap_caps_free on every exit path.
+  coverCache.reset(static_cast<uint8_t*>(heap_caps_malloc(requiredBytes, cacheCaps)));
+  if (!coverCache) {
+    coverCacheAllocationFailed = true;
+    LOG_ERR("HOME", "OOM: cover cache (%u bytes)", static_cast<unsigned>(requiredBytes));
+    return false;
+  }
+  coverCacheSlotSize = requiredSlotSize;
+#if defined(BOARD_HAS_PSRAM)
+  LOG_DBG("HOME", "Cover cache: %u bytes in PSRAM", static_cast<unsigned>(requiredBytes));
+#else
+  LOG_DBG("HOME", "Cover cache: %u bytes in internal RAM", static_cast<unsigned>(requiredBytes));
+#endif
+  return true;
+}
+
+void HomeActivity::clearCoverCache() {
+  coverCache.reset();
+  coverCacheSlotSize = 0;
+  for (CoverCacheEntry& entry : coverCacheEntries) entry = {};
 }
 
 void HomeActivity::buildScreen(UiScreen& screen) {
@@ -370,8 +458,8 @@ void HomeActivity::render(RenderLock&&) {
   const int renderedCoverHeight = screenStorage.layout.coverSize.height;
   if (!firstRenderDone) {
     firstRenderDone = true;
-    requestUpdate();
-  } else if (!recentsLoaded && !recentsLoading) {
+    loadRecentCovers(renderedCoverHeight);
+  } else if ((!recentsLoaded || loadedCoverTopIndex != topIndex) && !recentsLoading) {
     loadRecentCovers(renderedCoverHeight);
   } else if (coverHeight > 0 && renderedCoverHeight != coverHeight) {
     recentsLoaded = false;
