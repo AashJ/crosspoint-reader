@@ -50,6 +50,7 @@ struct ScreenStorage {
   fui::CoverGridProps covers{};
   fui::ButtonProps menuButton{};
   fui::SheetProps sheet{};
+  fui::HeaderProps sheetHeader{};
   fui::TileGridProps utilities{};
   Layout layout{};
 };
@@ -150,7 +151,9 @@ void build(fui::Screen<MaxInteractions>& screen, const Model& model, ScreenStora
       screen.frame().safeRect().height, grabberBand + theme.headerHeight + theme.spaceMd + gridHeight + theme.spaceLg));
   screen.sheet(storage.sheet, sheetHeight);
   screen.insetContent(fui::Insets{0, theme.spaceLg, theme.spaceLg, theme.spaceLg});
-  screen.header(model.labels.menu);
+  storage.sheetHeader.title = model.labels.menu;
+  storage.sheetHeader.borderEdges = fui::EdgesNone;
+  screen.header(storage.sheetHeader);
 
   storage.utilities.items = model.utilityItems;
   storage.utilities.count = model.utilityCount;

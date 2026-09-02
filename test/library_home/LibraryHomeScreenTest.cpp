@@ -136,6 +136,7 @@ void testSheetRouting() {
   Harness harness;
   harness.model.menuOpen = true;
   harness.app.render();
+  CHECK_EQ(harness.storage.sheetHeader.borderEdges, fui::EdgesNone);
   const fui::Rect grid = harness.storage.layout.utilityGrid;
   const int16_t tileWidth = static_cast<int16_t>((grid.width - harness.storage.utilities.gap) / 2);
   const auto utility = harness.tap(fui::Rect{grid.x, grid.y, tileWidth, harness.storage.utilities.tileHeight});
