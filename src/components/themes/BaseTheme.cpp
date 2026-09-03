@@ -298,19 +298,33 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
   const uint16_t percentage = powerManager.getBatteryPercentage();
   char percentText[8];
   snprintf(percentText, sizeof(percentText), "%u%%", static_cast<unsigned>(percentage));
+  // Untitled headers use the subtitle slot for compact status text beside the
+  // battery. The control center supplies its clock here; ordinary titled
+  // headers retain the existing lower-right subtitle treatment.
+  const bool hasBatteryStatus = title == nullptr && subtitle != nullptr && subtitle[0] != '\0';
+  char batteryStatusText[24];
+  const char* batteryLabel = showBatteryPercentage ? percentText : nullptr;
+  if (hasBatteryStatus) {
+    if (showBatteryPercentage) {
+      snprintf(batteryStatusText, sizeof(batteryStatusText), "%s  %s", percentText, subtitle);
+    } else {
+      snprintf(batteryStatusText, sizeof(batteryStatusText), "%s", subtitle);
+    }
+    batteryLabel = batteryStatusText;
+  }
   // The icon glyph extends 2px past glyphWidth (terminal nub); reserve it or
   // the percent label's rect comes up short and the text truncates.
   constexpr int16_t batteryNubWidth = 2;
   int16_t batteryReserve = static_cast<int16_t>(metrics.batteryWidth + batteryNubWidth);
-  if (showBatteryPercentage) {
+  if (batteryLabel != nullptr) {
     batteryReserve = static_cast<int16_t>(
         batteryReserve + batteryPercentSpacing +
-        ui.target.measureText(fui::GfxRendererTarget::FONT_SMALL, percentText, tokens.smallText).width);
+        ui.target.measureText(fui::GfxRendererTarget::FONT_SMALL, batteryLabel, tokens.smallText).width);
   }
 
   fui::HeaderProps props;
   props.title = title;
-  props.rightLabel = subtitle;  // firmware headers right-align the secondary text
+  props.rightLabel = hasBatteryStatus ? nullptr : subtitle;  // firmware headers right-align the secondary text
   const bool batteryLeft = metrics.headerBatterySide == 1;
   const bool batteryDetached = metrics.headerBatteryDetached;
   // Shared-line headers with the battery on the right: the header component
@@ -357,7 +371,7 @@ void BaseTheme::drawHeader(const GfxRenderer& renderer, Rect rect, const char* t
   fui::BatteryIndicatorProps battery;
   battery.percent = static_cast<uint8_t>(percentage > 100 ? 100 : percentage);
   battery.charging = gpio.isUsbConnected();
-  battery.label = showBatteryPercentage ? percentText : nullptr;
+  battery.label = batteryLabel;
   battery.text = tokens.smallText;
   battery.glyphWidth = static_cast<int16_t>(metrics.batteryWidth);
   battery.glyphHeight = static_cast<int16_t>(metrics.batteryHeight);

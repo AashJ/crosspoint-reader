@@ -2,6 +2,7 @@
 
 #include <FreeInkUIIcon.h>
 #include <GfxRenderer.h>
+#include <HalClock.h>
 #include <HalFrontlight.h>
 #include <HalGPIO.h>
 #include <I18n.h>
@@ -353,13 +354,18 @@ void FrontlightPanelActivity::buildPanelScreen(UiScreen& screen) {
   // untitled Home header.
   {
     const auto& metrics = UITheme::getInstance().getMetrics();
+    char timeText[9];
+    const char* timeLabel = nullptr;
+    if (halClock.formatTime(timeText, sizeof(timeText), SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat == 1)) {
+      timeLabel = timeText;
+    }
     screen.spacer(theme.spaceMd);
     const int16_t bandH = std::max<int16_t>(static_cast<int16_t>(metrics.batteryHeight),
                                             screen.target().lineHeight(theme.smallText.font));
     screen.takeTop(bandH, theme.spaceMd);
     UITheme::getInstance().getTheme().BaseTheme::drawHeader(
         renderer, Rect{0, metrics.topPadding, renderer.getScreenWidth(), metrics.homeTopPadding - metrics.topPadding},
-        nullptr);
+        nullptr, timeLabel);
   }
 
   if (Frontlight.present()) {
